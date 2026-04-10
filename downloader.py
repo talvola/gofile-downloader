@@ -147,6 +147,30 @@ def update_dates_only(files: list[dict], folders: list[dict], output_dir: str):
     return updated
 
 
+def find_orphans(files: list[dict], folders: list[dict], output_dir: str) -> list[str]:
+    """
+    Find local files that don't exist on the remote server.
+
+    Returns a list of relative paths for files present locally but not in the
+    remote file listing.
+    """
+    remote_paths = {f["path"].replace("\\", "/") for f in files}
+
+    orphans = []
+    if not os.path.isdir(output_dir):
+        return orphans
+
+    for dirpath, dirnames, filenames in os.walk(output_dir):
+        for filename in filenames:
+            local_abs = os.path.join(dirpath, filename)
+            rel = os.path.relpath(local_abs, output_dir).replace("\\", "/")
+            if rel not in remote_paths:
+                orphans.append(rel)
+
+    orphans.sort()
+    return orphans
+
+
 def _create_folders(folders: list[dict], output_dir: str, dry_run: bool = False):
     """Create subdirectories listed in folders."""
     for folder in folders:

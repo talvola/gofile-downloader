@@ -10,12 +10,19 @@ Usage:
 """
 
 import argparse
+import io
 import re
 import sys
 
+# Ensure stdout/stderr handle Unicode on Windows (cp1252 can't print some chars)
+if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+if sys.stderr.encoding and sys.stderr.encoding.lower() != "utf-8":
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+
 from api_client import create_guest_account, get_content, parse_file_tree
 from browser_scraper import scrape_content
-from downloader import download_files, update_dates_only
+from downloader import download_files, update_dates_only, find_orphans
 
 
 def parse_content_id(input_str: str) -> str:
@@ -137,6 +144,18 @@ def main():
     # --- Download ---
     print()
     download_files(files, folders, output_dir, account_token, args.dry_run)
+
+    # --- Check for orphaned local files ---
+    print("\nChecking for orphaned local files...")
+    orphans = find_orphans(files, folders, output_dir)
+    if orphans:
+        print(f"Found {len(orphans)} local file(s) not present on the server:")
+        for o in orphans:
+            print(f"  ORPHAN: {o}")
+        print(f"\nThese files may have been deleted, moved, or renamed on the server.")
+        print(f"They have NOT been deleted locally — review and remove manually if desired.")
+    else:
+        print("No orphaned files found — local copy matches server.")
 
 
 if __name__ == "__main__":
