@@ -66,25 +66,33 @@ def get_content(content_id: str, account_token: str, password: str | None = None
     return None, body.get("status", "unknown-error")
 
 
-def parse_file_tree(data: dict) -> list[dict]:
+def parse_file_tree(data: dict, account_token: str | None = None, password: str | None = None) -> tuple[list[dict], list[dict]]:
     """
-    Recursively flatten API content data into a list of file dicts.
-    Each dict has: name, path (relative to root folder), link, size, create_time.
+    Recursively flatten API content data into a list of file dicts and folder dicts.
+
+    Files have: name, path (relative to root folder), link, size, create_time.
+    Folders have: name, path (relative to root folder), create_time.
     The root folder name is NOT included in paths (it's used as the output dir).
+
+    When a subfolder has a code but no children, fetches its contents via the API.
+
+    Returns (files, folders).
     """
     files = []
+    folders = []
     # Start with empty prefix — skip root folder name
     children = data.get("children", {})
     if isinstance(children, dict):
         children = children.values()
     for child in children:
-        _walk(child, "", files)
-    return files
+        _walk(child, "", files, folders, account_token, password)
+    return files, folders
 
 
-def _walk(node: dict, prefix: str, out: list[dict]):
+def _walk(node: dict, prefix: str, files: list[dict], folders: list[dict],
+          account_token: str | None = None, password: str | None = None):
     if node.get("type") == "file":
-        out.append({
+        files.append({
             "name": node["name"],
             "path": f"{prefix}{node['name']}" if prefix else node["name"],
             "link": node.get("link"),
@@ -99,8 +107,32 @@ def _walk(node: dict, prefix: str, out: list[dict]):
         f"{folder_name}/" if folder_name else prefix
     )
 
+    # Record this subfolder (skip if it's a nameless/root-level container)
+    if folder_name:
+        folder_path = current_prefix.rstrip("/")
+        folders.append({
+            "name": folder_name,
+            "path": folder_path,
+            "create_time": node.get("createTime"),
+        })
+
     children = node.get("children", {})
     if isinstance(children, dict):
         children = children.values()
+    children = list(children)
+
+    # If folder has no children but has a code, fetch its contents via the API
+    if not children and node.get("code") and account_token:
+        folder_code = node["code"]
+        print(f"  Fetching subfolder: {folder_name} ({folder_code})...")
+        sub_data, err = get_content(folder_code, account_token, password)
+        if sub_data:
+            children = sub_data.get("children", {})
+            if isinstance(children, dict):
+                children = children.values()
+            children = list(children)
+        else:
+            print(f"  Warning: could not fetch subfolder {folder_name}: {err}")
+
     for child in children:
-        _walk(child, current_prefix, out)
+        _walk(child, current_prefix, files, folders, account_token, password)

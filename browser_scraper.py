@@ -11,13 +11,14 @@ except ImportError:
     BrowserContext = None
 
 
-def scrape_content(content_id: str, password: str | None = None) -> tuple[str, list[dict]]:
+def scrape_content(content_id: str, password: str | None = None) -> tuple[str, list[dict], list[dict]]:
     """
     Use a headless browser to load gofile.io/d/{content_id} and extract
     the file listing.
 
-    Returns (folder_name, list_of_file_dicts).
+    Returns (folder_name, list_of_file_dicts, list_of_folder_dicts).
     Each file dict has: name, path, link, size, create_time (may be None).
+    Each folder dict has: name, path, create_time (may be None).
     """
     if sync_playwright is None:
         raise RuntimeError(
@@ -53,11 +54,11 @@ def scrape_content(content_id: str, password: str | None = None) -> tuple[str, l
 
         # Extract folder name and file listing
         folder_name = _extract_folder_name(page, content_id)
-        files = _extract_files(page, context, content_id)
+        files, folders = _extract_files(page, context, content_id)
 
         browser.close()
 
-    return folder_name, files
+    return folder_name, files, folders
 
 
 def _enter_password(page: Page, password: str):
@@ -110,25 +111,27 @@ def _extract_folder_name(page: Page, content_id: str) -> str:
     return content_id
 
 
-def _extract_files(page: Page, context: BrowserContext, content_id: str) -> list[dict]:
+def _extract_files(page: Page, context: BrowserContext, content_id: str) -> tuple[list[dict], list[dict]]:
     """
-    Extract file information from the rendered page.
+    Extract file and folder information from the rendered page.
     Uses JavaScript evaluation to pull data from the page's internal state.
+
+    Returns (files, folders).
     """
     # Strategy 1: Try to intercept the API response data from page JS context
-    files = _try_js_extraction(page)
-    if files:
-        return files
+    result = _try_js_extraction(page)
+    if result:
+        return result
 
-    # Strategy 2: Parse the DOM for file rows
+    # Strategy 2: Parse the DOM for file rows (no folder info available this way)
     files = _try_dom_extraction(page)
     if files:
-        return files
+        return files, []
 
-    return []
+    return [], []
 
 
-def _try_js_extraction(page: Page) -> list[dict] | None:
+def _try_js_extraction(page: Page) -> tuple[list[dict], list[dict]] | None:
     """Try to extract file data from JavaScript variables on the page."""
     try:
         # Gofile stores content data in window/app state — try common patterns

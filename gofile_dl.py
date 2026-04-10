@@ -72,6 +72,7 @@ def main():
 
     folder_name = None
     files = []
+    folders = []
     account_token = None
 
     # --- Try API first (unless forced to browser) ---
@@ -90,9 +91,11 @@ def main():
         data, error = get_content(content_id, account_token, args.password)
         if data:
             folder_name = data.get("name", content_id)
-            files = parse_file_tree(data)
+            files, folders = parse_file_tree(data, account_token, args.password)
             print(f"  Folder: {folder_name}")
             print(f"  Files found: {len(files)}")
+            if folders:
+                print(f"  Subfolders found: {len(folders)}")
         else:
             print(f"  API error: {error}")
             if "premium" in str(error).lower():
@@ -106,9 +109,11 @@ def main():
     if args.force_browser or not files:
         print("Launching browser to scrape file listing...")
         try:
-            folder_name, files = scrape_content(content_id, args.password)
+            folder_name, files, folders = scrape_content(content_id, args.password)
             print(f"  Folder: {folder_name}")
             print(f"  Files found: {len(files)}")
+            if folders:
+                print(f"  Subfolders found: {len(folders)}")
         except Exception as e:
             print(f"  Browser scraping failed: {e}")
             sys.exit(1)
@@ -126,12 +131,12 @@ def main():
     # --- Dates-only mode ---
     if args.dates_only:
         print("\nUpdating file dates only...")
-        update_dates_only(files, output_dir)
+        update_dates_only(files, folders, output_dir)
         return
 
     # --- Download ---
     print()
-    download_files(files, output_dir, account_token, args.dry_run)
+    download_files(files, folders, output_dir, account_token, args.dry_run)
 
 
 if __name__ == "__main__":

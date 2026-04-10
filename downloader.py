@@ -13,6 +13,7 @@ DEFAULT_UA = (
 
 def download_files(
     files: list[dict],
+    folders: list[dict],
     output_dir: str,
     account_token: str | None = None,
     dry_run: bool = False,
@@ -21,10 +22,15 @@ def download_files(
     Download a list of files to output_dir.
 
     Each file dict should have: name, path, link, size (optional), create_time (optional).
+    Each folder dict should have: name, path, create_time (optional).
 
     Skips files that already exist with matching size.
     Always updates file dates when create_time is available (even for skipped files).
+    Creates subdirectories and sets their dates after all files are processed.
     """
+    # Create subdirectories up front
+    _create_folders(folders, output_dir, dry_run)
+
     total = len(files)
     downloaded = 0
     skipped = 0
@@ -101,13 +107,17 @@ def download_files(
                 except OSError:
                     pass
 
+    # Set folder dates after all files are written (deepest first so parent
+    # mtime isn't updated by later child writes)
+    _set_folder_dates(folders, output_dir)
+
     print()
     print(f"Done: {downloaded} downloaded, {skipped} skipped, {date_updated} dates updated, {errors} errors")
     return {"downloaded": downloaded, "skipped": skipped, "date_updated": date_updated, "errors": errors}
 
 
-def update_dates_only(files: list[dict], output_dir: str):
-    """Update file dates for all existing files without downloading anything."""
+def update_dates_only(files: list[dict], folders: list[dict], output_dir: str):
+    """Update file and folder dates for all existing items without downloading anything."""
     updated = 0
     missing = 0
     no_date = 0
@@ -129,7 +139,42 @@ def update_dates_only(files: list[dict], output_dir: str):
         updated += 1
         print(f"  Date updated: {rel_path}")
 
+    # Update folder dates (deepest first)
+    folder_dates = _set_folder_dates(folders, output_dir)
+    updated += folder_dates
+
     print(f"Dates: {updated} updated, {missing} files not found locally, {no_date} had no date info")
+    return updated
+
+
+def _create_folders(folders: list[dict], output_dir: str, dry_run: bool = False):
+    """Create subdirectories listed in folders."""
+    for folder in folders:
+        local_path = os.path.join(output_dir, folder["path"])
+        if not os.path.exists(local_path):
+            if dry_run:
+                print(f"  DRY RUN: would create directory {folder['path']}")
+            else:
+                os.makedirs(local_path, exist_ok=True)
+                print(f"  Created directory: {folder['path']}")
+        else:
+            print(f"  Directory exists: {folder['path']}")
+
+
+def _set_folder_dates(folders: list[dict], output_dir: str) -> int:
+    """Set dates on folders, deepest first so parent mtime isn't disturbed."""
+    updated = 0
+    # Sort by path depth descending so children are processed before parents
+    sorted_folders = sorted(folders, key=lambda f: f["path"].count("/"), reverse=True)
+    for folder in sorted_folders:
+        create_time = folder.get("create_time")
+        if not create_time:
+            continue
+        local_path = os.path.join(output_dir, folder["path"])
+        if os.path.isdir(local_path):
+            _set_file_time(local_path, create_time)
+            print(f"  Directory date set: {folder['path']}")
+            updated += 1
     return updated
 
 
