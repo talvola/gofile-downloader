@@ -130,7 +130,9 @@ def main():
         sys.exit(1)
 
     # --- Determine output directory ---
-    if not folder_name:
+    if not folder_name or folder_name == "root":
+        if folder_name == "root":
+            print(f"  Folder name is 'root' — using content ID '{content_id}' instead")
         folder_name = content_id
     output_dir = f"{args.output}/{folder_name}"
     print(f"\nOutput directory: {output_dir}")
