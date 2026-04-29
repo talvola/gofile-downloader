@@ -1,7 +1,10 @@
 """Gofile API client — guest account, website token, content listing."""
 
 import hashlib
+import re
 import time
+from collections import defaultdict
+
 import requests
 
 API_BASE = "https://api.gofile.io"
@@ -86,13 +89,53 @@ def parse_file_tree(data: dict, account_token: str | None = None, password: str 
         children = children.values()
     for child in children:
         _walk(child, "", files, folders, account_token, password)
+    _disambiguate_paths(files)
     return files, folders
+
+
+def _disambiguate_paths(files: list[dict]) -> None:
+    """
+    When multiple files in the same folder share a name, gofile lets both
+    coexist (different IDs). Writing them to the same local path makes them
+    overwrite each other on every sync. Append a short ID-derived suffix to
+    every member of a colliding group so the assignment is stable across
+    runs regardless of API ordering.
+    """
+    groups: dict[str, list[dict]] = defaultdict(list)
+    for f in files:
+        groups[f["path"]].append(f)
+    for group in groups.values():
+        if len(group) <= 1:
+            continue
+        for f in group:
+            f["path"] = _suffix_path(f["path"], _short_id(f))
+
+
+def _short_id(file: dict) -> str:
+    fid = file.get("id") or ""
+    if not fid:
+        m = re.search(r"/([a-f0-9-]{36})/", file.get("link") or "")
+        if m:
+            fid = m.group(1)
+    return fid[:8] if fid else "dup"
+
+
+def _suffix_path(path: str, suffix: str) -> str:
+    """Insert ' (suffix)' before the extension. Path uses forward slashes."""
+    slash = path.rfind("/")
+    dirname = path[: slash + 1] if slash >= 0 else ""
+    basename = path[slash + 1 :] if slash >= 0 else path
+    dot = basename.rfind(".")
+    if dot > 0:
+        return f"{dirname}{basename[:dot]} ({suffix}){basename[dot:]}"
+    return f"{dirname}{basename} ({suffix})"
 
 
 def _walk(node: dict, prefix: str, files: list[dict], folders: list[dict],
           account_token: str | None = None, password: str | None = None):
     if node.get("type") == "file":
         files.append({
+            "id": node.get("id"),
             "name": node["name"],
             "path": f"{prefix}{node['name']}" if prefix else node["name"],
             "link": node.get("link"),

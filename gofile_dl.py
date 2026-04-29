@@ -105,6 +105,9 @@ def main():
                 print(f"  Subfolders found: {len(folders)}")
         else:
             print(f"  API error: {error}")
+            if "notfound" in str(error).lower().replace("-", ""):
+                print(f"  Content '{content_id}' does not exist — it may have been deleted or expired.")
+                sys.exit(1)
             if "premium" in str(error).lower():
                 print("  Premium required — falling back to browser scraping...")
                 args.force_browser = True

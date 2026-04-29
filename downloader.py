@@ -44,42 +44,42 @@ def download_files(
         create_time = f.get("create_time")
         link = f.get("link")
 
-        print(f"[{i}/{total}] {rel_path}", end="")
+        prefix = f"[{i}/{total}] {rel_path}"
 
         # Check if file exists and can be skipped
         if os.path.exists(local_path):
             local_size = os.path.getsize(local_path)
             if size is not None and local_size == size:
-                print(f" — SKIP (exists, {_fmt_size(size)})", end="")
+                msg = f"{prefix} — SKIP (exists, {_fmt_size(size)})"
                 skipped += 1
-                # Still update the date
                 if create_time:
                     _set_file_time(local_path, create_time)
                     date_updated += 1
-                    print(" [date updated]", end="")
-                print()
+                    msg += " [date updated]"
+                print(msg)
                 continue
             elif size is not None and local_size != size:
-                print(f" — RE-DOWNLOAD (size mismatch: local={local_size}, remote={size})", end="")
+                print(f"{prefix} — RE-DOWNLOAD (size mismatch: local={local_size}, remote={size})")
+                # fall through to download below
             else:
                 # No remote size info — skip if file exists with non-zero size
                 if local_size > 0:
-                    print(f" — SKIP (exists, {_fmt_size(local_size)}, no remote size to verify)", end="")
+                    msg = f"{prefix} — SKIP (exists, {_fmt_size(local_size)}, no remote size to verify)"
                     skipped += 1
                     if create_time:
                         _set_file_time(local_path, create_time)
                         date_updated += 1
-                        print(" [date updated]", end="")
-                    print()
+                        msg += " [date updated]"
+                    print(msg)
                     continue
 
         if not link:
-            print(" — ERROR: no download link")
+            print(f"{prefix} — ERROR: no download link")
             errors += 1
             continue
 
         if dry_run:
-            print(f" — DRY RUN (would download, {_fmt_size(size)})")
+            print(f"{prefix} — DRY RUN (would download, {_fmt_size(size)})")
             continue
 
         # Ensure directory exists
@@ -87,18 +87,18 @@ def download_files(
 
         # Download the file
         try:
-            _download_file(link, local_path, account_token, size)
+            _download_file(link, local_path, account_token, size, prefix)
             downloaded += 1
-            print(f" — OK ({_fmt_size(os.path.getsize(local_path))})", end="")
+            msg = f"{prefix} — OK ({_fmt_size(os.path.getsize(local_path))})"
 
             if create_time:
                 _set_file_time(local_path, create_time)
                 date_updated += 1
-                print(" [date set]", end="")
-            print()
+                msg += " [date set]"
+            print(msg)
 
         except Exception as e:
-            print(f" — ERROR: {e}")
+            print(f"{prefix} — ERROR: {e}")
             errors += 1
             # Clean up partial file
             if os.path.exists(local_path):
@@ -202,7 +202,8 @@ def _set_folder_dates(folders: list[dict], output_dir: str) -> int:
     return updated
 
 
-def _download_file(url: str, local_path: str, account_token: str | None, expected_size: int | None):
+def _download_file(url: str, local_path: str, account_token: str | None,
+                   expected_size: int | None, prefix: str = ""):
     """Stream-download a file with proper headers."""
     headers = {
         "User-Agent": DEFAULT_UA,
@@ -218,6 +219,7 @@ def _download_file(url: str, local_path: str, account_token: str | None, expecte
 
     total = int(r.headers.get("content-length", 0)) or expected_size or 0
     wrote = 0
+    max_line_len = 0
 
     with open(local_path, "wb") as fp:
         for chunk in r.iter_content(chunk_size=1024 * 1024):  # 1MB chunks
@@ -225,10 +227,13 @@ def _download_file(url: str, local_path: str, account_token: str | None, expecte
             wrote += len(chunk)
             if total:
                 pct = wrote * 100 // total
-                print(f"\r  Downloading... {pct}% ({_fmt_size(wrote)}/{_fmt_size(total)})", end="", flush=True)
+                line = f"{prefix} — Downloading... {pct}% ({_fmt_size(wrote)}/{_fmt_size(total)})"
+                max_line_len = max(max_line_len, len(line))
+                print(f"\r{line}", end="", flush=True)
 
-    if total:
-        print("\r" + " " * 70 + "\r", end="")  # Clear progress line
+    if max_line_len:
+        # Clear the progress line so the caller can print the final status cleanly
+        print("\r" + " " * max_line_len + "\r", end="")
 
     if expected_size and wrote != expected_size:
         raise RuntimeError(f"Size mismatch: got {wrote}, expected {expected_size}")
