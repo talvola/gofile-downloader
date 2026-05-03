@@ -81,6 +81,7 @@ def main():
     files = []
     folders = []
     account_token = None
+    api_succeeded = False
 
     # --- Try API first (unless forced to browser) ---
     if not args.force_browser:
@@ -97,6 +98,7 @@ def main():
         print("Fetching content via API...")
         data, error = get_content(content_id, account_token, args.password)
         if data:
+            api_succeeded = True
             folder_name = data.get("name", content_id)
             files, folders = parse_file_tree(data, account_token, args.password)
             print(f"  Folder: {folder_name}")
@@ -115,8 +117,10 @@ def main():
                 print("  Falling back to browser scraping...")
                 args.force_browser = True
 
-    # --- Browser fallback ---
-    if args.force_browser or not files:
+    # --- Browser fallback (only when API failed; falling back on a successful
+    # API response with 0 files makes the scraper grab page chrome for private
+    # content, which masquerades as a successful download of garbage HTML) ---
+    if args.force_browser and not api_succeeded:
         print("Launching browser to scrape file listing...")
         try:
             folder_name, files, folders = scrape_content(content_id, args.password)
@@ -129,7 +133,11 @@ def main():
             sys.exit(1)
 
     if not files:
-        print("No files found. The content may be empty, removed, or require a password.")
+        if api_succeeded:
+            print("\nNo accessible files found. The content's subfolders may be "
+                  "set to private — only the owner can change that.")
+        else:
+            print("\nNo files found. The content may be empty, removed, or require a password.")
         sys.exit(1)
 
     # --- Determine output directory ---

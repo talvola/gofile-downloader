@@ -146,6 +146,15 @@ def _walk(node: dict, prefix: str, files: list[dict], folders: list[dict],
 
     # It's a folder
     folder_name = node.get("name", "")
+
+    # Skip folders the guest account can't access (owner has them set to private).
+    # The API returns the metadata but no children; walking would silently produce
+    # an empty local directory.
+    if node.get("canAccess") is False:
+        print(f"  Skipping inaccessible subfolder: {folder_name or '(unnamed)'} "
+              f"(owner has not made it public)")
+        return
+
     current_prefix = f"{prefix}{folder_name}/" if folder_name and prefix != "" else (
         f"{folder_name}/" if folder_name else prefix
     )
