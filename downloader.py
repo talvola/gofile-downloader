@@ -46,9 +46,16 @@ def download_files(
 
         prefix = f"[{i}/{total}] {rel_path}"
 
-        # Check if file exists and can be skipped
-        if os.path.exists(local_path):
+        # Check if file exists and can be skipped. Use a single getsize call
+        # (EAFP) — pairing exists() with getsize() races on Windows when the
+        # filesystem cache (RAMdisk, network drive, antivirus) briefly
+        # disagrees with reality.
+        try:
             local_size = os.path.getsize(local_path)
+        except OSError:
+            local_size = None
+
+        if local_size is not None:
             if size is not None and local_size == size:
                 msg = f"{prefix} — SKIP (exists, {_fmt_size(size)})"
                 skipped += 1
@@ -61,17 +68,16 @@ def download_files(
             elif size is not None and local_size != size:
                 print(f"{prefix} — RE-DOWNLOAD (size mismatch: local={local_size}, remote={size})")
                 # fall through to download below
-            else:
-                # No remote size info — skip if file exists with non-zero size
-                if local_size > 0:
-                    msg = f"{prefix} — SKIP (exists, {_fmt_size(local_size)}, no remote size to verify)"
-                    skipped += 1
-                    if create_time:
-                        _set_file_time(local_path, create_time)
-                        date_updated += 1
-                        msg += " [date updated]"
-                    print(msg)
-                    continue
+            elif local_size > 0:
+                # No remote size info — skip if local has non-zero size
+                msg = f"{prefix} — SKIP (exists, {_fmt_size(local_size)}, no remote size to verify)"
+                skipped += 1
+                if create_time:
+                    _set_file_time(local_path, create_time)
+                    date_updated += 1
+                    msg += " [date updated]"
+                print(msg)
+                continue
 
         if not link:
             print(f"{prefix} — ERROR: no download link")
