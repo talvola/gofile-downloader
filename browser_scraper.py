@@ -11,7 +11,9 @@ except ImportError:
     BrowserContext = None
 
 
-def scrape_content(content_id: str, password: str | None = None) -> tuple[str, list[dict], list[dict]]:
+def scrape_content(
+    content_id: str, password: str | None = None
+) -> tuple[str, list[dict], list[dict]]:
     """
     Use a headless browser to load gofile.io/d/{content_id} and extract
     the file listing.
@@ -70,7 +72,9 @@ def _enter_password(page: Page, password: str):
         if pw_input:
             pw_input.fill(password)
             # Click submit button near password field
-            page.click('button:has-text("OK"), button:has-text("Submit"), button[type="submit"]')
+            page.click(
+                'button:has-text("OK"), button:has-text("Submit"), button[type="submit"]'
+            )
             page.wait_for_load_state("networkidle", timeout=15000)
     except Exception:
         pass  # No password prompt found
@@ -100,7 +104,13 @@ def _extract_folder_name(page: Page, content_id: str) -> str:
     """Try to get the folder name from the page title or breadcrumbs."""
     try:
         # Look for breadcrumb or heading
-        for selector in ["h1", "h2", ".folder-name", "[class*='breadcrumb']", "[class*='title']"]:
+        for selector in [
+            "h1",
+            "h2",
+            ".folder-name",
+            "[class*='breadcrumb']",
+            "[class*='title']",
+        ]:
             el = page.query_selector(selector)
             if el:
                 text = el.inner_text().strip()
@@ -111,7 +121,9 @@ def _extract_folder_name(page: Page, content_id: str) -> str:
     return content_id
 
 
-def _extract_files(page: Page, context: BrowserContext, content_id: str) -> tuple[list[dict], list[dict]]:
+def _extract_files(
+    page: Page, context: BrowserContext, content_id: str
+) -> tuple[list[dict], list[dict]]:
     """
     Extract file and folder information from the rendered page.
     Uses JavaScript evaluation to pull data from the page's internal state.
@@ -162,9 +174,11 @@ def _try_js_extraction(page: Page) -> tuple[list[dict], list[dict]] | None:
         }""")
         if result:
             import json
+
             data = json.loads(result)
             # Try to parse as API-like structure
             from api_client import parse_file_tree
+
             return parse_file_tree(data)
     except Exception:
         pass
@@ -231,19 +245,24 @@ def _try_dom_extraction(page: Page) -> list[dict]:
             link = item.get("link", "")
             if not name or name in seen:
                 continue
-            seen.add(name)
-
             # Try to parse size and date from surrounding text
             size = _parse_size(item.get("texts", []))
             create_time = _parse_date(item.get("texts", []))
 
-            files.append({
-                "name": name,
-                "path": name,
-                "link": link if link else None,
-                "size": size,
-                "create_time": create_time,
-            })
+            # Skip nav/UI items: real files have an extension or a known size
+            if not re.search(r"\.[a-zA-Z0-9]{2,7}$", name) and size is None:
+                continue
+            seen.add(name)
+
+            files.append(
+                {
+                    "name": name,
+                    "path": name,
+                    "link": link if link else None,
+                    "size": size,
+                    "create_time": create_time,
+                }
+            )
 
     except Exception as e:
         print(f"  DOM extraction error: {e}")
@@ -267,6 +286,7 @@ def _parse_size(texts: list[str]) -> int | None:
 def _parse_date(texts: list[str]) -> float | None:
     """Try to parse a date from text fragments and return as Unix timestamp."""
     from datetime import datetime
+
     date_patterns = [
         (r"\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}", "%Y-%m-%d %H:%M"),
         (r"\d{4}-\d{2}-\d{2}", "%Y-%m-%d"),

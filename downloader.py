@@ -66,7 +66,9 @@ def download_files(
                 print(msg)
                 continue
             elif size is not None and local_size != size:
-                print(f"{prefix} — RE-DOWNLOAD (size mismatch: local={local_size}, remote={size})")
+                print(
+                    f"{prefix} — RE-DOWNLOAD (size mismatch: local={local_size}, remote={size})"
+                )
                 # fall through to download below
             elif local_size > 0:
                 # No remote size info — skip if local has non-zero size
@@ -118,8 +120,15 @@ def download_files(
     _set_folder_dates(folders, output_dir)
 
     print()
-    print(f"Done: {downloaded} downloaded, {skipped} skipped, {date_updated} dates updated, {errors} errors")
-    return {"downloaded": downloaded, "skipped": skipped, "date_updated": date_updated, "errors": errors}
+    print(
+        f"Done: {downloaded} downloaded, {skipped} skipped, {date_updated} dates updated, {errors} errors"
+    )
+    return {
+        "downloaded": downloaded,
+        "skipped": skipped,
+        "date_updated": date_updated,
+        "errors": errors,
+    }
 
 
 def update_dates_only(files: list[dict], folders: list[dict], output_dir: str):
@@ -149,7 +158,9 @@ def update_dates_only(files: list[dict], folders: list[dict], output_dir: str):
     folder_dates = _set_folder_dates(folders, output_dir)
     updated += folder_dates
 
-    print(f"Dates: {updated} updated, {missing} files not found locally, {no_date} had no date info")
+    print(
+        f"Dates: {updated} updated, {missing} files not found locally, {no_date} had no date info"
+    )
     return updated
 
 
@@ -208,8 +219,13 @@ def _set_folder_dates(folders: list[dict], output_dir: str) -> int:
     return updated
 
 
-def _download_file(url: str, local_path: str, account_token: str | None,
-                   expected_size: int | None, prefix: str = ""):
+def _download_file(
+    url: str,
+    local_path: str,
+    account_token: str | None,
+    expected_size: int | None,
+    prefix: str = "",
+):
     """Stream-download a file with proper headers."""
     headers = {
         "User-Agent": DEFAULT_UA,
@@ -258,6 +274,10 @@ def _fmt_size(size: int | None) -> str:
         return "unknown size"
     for unit in ("B", "KB", "MB", "GB", "TB"):
         if size < 1024:
-            return f"{size:.1f} {unit}" if isinstance(size, float) or size >= 100 else f"{size} {unit}"
+            return (
+                f"{size:.1f} {unit}"
+                if isinstance(size, float) or size >= 100
+                else f"{size} {unit}"
+            )
         size /= 1024
     return f"{size:.1f} PB"
