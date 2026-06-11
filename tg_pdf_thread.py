@@ -26,6 +26,7 @@ import time
 import requests
 
 from api_client import create_guest_account
+from gofile_dl import DEFAULT_OUTPUT
 from gofile_dl import run as download_gofile
 
 API_BASE = "https://a.4cdn.org"
@@ -139,9 +140,10 @@ def main():
         help="Thread URL or number (default: search the catalog for the PDF Share Thread)",
     )
     parser.add_argument(
-        "-o", "--output",
-        default="/mnt/r/gofile",
-        help="Base output directory (default: /mnt/r/gofile)",
+        "-o",
+        "--output",
+        default=DEFAULT_OUTPUT,
+        help=f"Base output directory (default: {DEFAULT_OUTPUT})",
     )
     parser.add_argument(
         "--depth",
@@ -188,7 +190,9 @@ def main():
         fresh = [(cid, pno, thread_no) for cid, pno in ids if cid not in seen_ids]
         seen_ids.update(cid for cid, _, _ in fresh)
         all_ids = fresh + all_ids  # prepend: previous threads end up first
-        print(f"Thread {thread_no}: {len(posts)} posts, {len(ids)} gofile IDs ({len(fresh)} new)")
+        print(
+            f"Thread {thread_no}: {len(posts)} posts, {len(ids)} gofile IDs ({len(fresh)} new)"
+        )
 
         prev = find_previous_thread(posts)
         if prev is None:
@@ -231,7 +235,7 @@ def main():
         except (requests.ConnectionError, requests.Timeout) as e:
             print(f"Connection to gofile lost ({type(e).__name__}) — aborting run.")
             print("Re-run later; already-downloaded files will be skipped.")
-            failed.extend(c for c, _, _ in all_ids[i - 1:])
+            failed.extend(c for c, _, _ in all_ids[i - 1 :])
             break
         except Exception as e:
             print(f"Unexpected error: {e}")
