@@ -35,14 +35,34 @@ def _website_token(account_token: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def create_guest_account() -> str:
-    """Create a guest account and return its token."""
-    r = requests.post(f"{API_BASE}/accounts", headers={"User-Agent": DEFAULT_UA})
-    r.raise_for_status()
-    data = r.json()
-    if data.get("status") != "ok":
-        raise RuntimeError(f"Failed to create guest account: {data}")
-    return data["data"]["token"]
+def create_guest_account(max_retries: int = 5) -> str:
+    """Create a guest account and return its token. Retries with backoff on rate limit."""
+    delay = 30
+    for attempt in range(max_retries):
+        try:
+            r = requests.post(
+                f"{API_BASE}/accounts", headers={"User-Agent": DEFAULT_UA}, timeout=30
+            )
+        except (requests.ConnectionError, requests.Timeout) as e:
+            if attempt == max_retries - 1:
+                raise
+            print(f"  Connection problem ({type(e).__name__}), retrying in {delay}s...")
+            time.sleep(delay)
+            delay = min(delay * 2, 300)
+            continue
+        if r.status_code == 429:
+            if attempt == max_retries - 1:
+                break
+            print(f"  Rate-limited creating account, retrying in {delay}s...")
+            time.sleep(delay)
+            delay = min(delay * 2, 300)
+            continue
+        r.raise_for_status()
+        data = r.json()
+        if data.get("status") != "ok":
+            raise RuntimeError(f"Failed to create guest account: {data}")
+        return data["data"]["token"]
+    raise RuntimeError("Failed to create guest account: rate-limited (429) after retries")
 
 
 def get_content(content_id: str, account_token: str, password: str | None = None):
@@ -57,7 +77,7 @@ def get_content(content_id: str, account_token: str, password: str | None = None
     if password:
         params["password"] = hashlib.sha256(password.encode()).hexdigest()
 
-    r = session.get(f"{API_BASE}/contents/{content_id}", params=params)
+    r = session.get(f"{API_BASE}/contents/{content_id}", params=params, timeout=60)
     r.raise_for_status()
     body = r.json()
 

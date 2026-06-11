@@ -30,6 +30,86 @@ def parse_content_id(input_str: str) -> str:
     raise ValueError(f"Cannot parse content ID from: {input_str}")
 
 
+def run(
+    content_id: str,
+    output_base: str = "/mnt/r/gofile",
+    password: str | None = None,
+    dry_run: bool = False,
+    dates_only: bool = False,
+    force_browser: bool = False,
+    account_token: str | None = None,
+) -> bool:
+    """Download a single gofile content ID. Returns True on success.
+
+    Pass account_token to reuse an existing guest account (avoids gofile's
+    rate limit on account creation when downloading many IDs in one run).
+    """
+    print(f"Content ID: {content_id}")
+
+    folder_name = None
+    files = []
+
+    # --- Try API first (unless forced to browser) ---
+    if not force_browser and not account_token:
+        print("Creating guest account...")
+        try:
+            account_token = create_guest_account()
+            print(f"  Token: {account_token[:8]}...")
+        except Exception as e:
+            print(f"  Failed to create guest account: {e}")
+            print("  Falling back to browser scraping...")
+            force_browser = True
+
+    if not force_browser and account_token:
+        print("Fetching content via API...")
+        data, error = get_content(content_id, account_token, password)
+        if data:
+            folder_name = data.get("name", content_id)
+            files = parse_file_tree(data)
+            print(f"  Folder: {folder_name}")
+            print(f"  Files found: {len(files)}")
+        elif "notfound" in str(error).lower().replace("-", ""):
+            # Dead link — browser scraping won't help, don't waste time
+            print(f"  API error: {error} (content removed or never existed)")
+            return False
+        else:
+            print(f"  API error: {error}")
+            print("  Falling back to browser scraping...")
+            force_browser = True
+
+    # --- Browser fallback ---
+    if force_browser or not files:
+        print("Launching browser to scrape file listing...")
+        try:
+            folder_name, files = scrape_content(content_id, password)
+            print(f"  Folder: {folder_name}")
+            print(f"  Files found: {len(files)}")
+        except Exception as e:
+            print(f"  Browser scraping failed: {e}")
+            return False
+
+    if not files:
+        print("No files found. The content may be empty, removed, or require a password.")
+        return False
+
+    # --- Determine output directory ---
+    if not folder_name:
+        folder_name = content_id
+    output_dir = f"{output_base}/{folder_name}"
+    print(f"\nOutput directory: {output_dir}")
+
+    # --- Dates-only mode ---
+    if dates_only:
+        print("\nUpdating file dates only...")
+        update_dates_only(files, output_dir)
+        return True
+
+    # --- Download ---
+    print()
+    stats = download_files(files, output_dir, account_token, dry_run)
+    return stats.get("errors", 0) == 0
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Download and sync files from gofile.io",
@@ -68,70 +148,16 @@ def main():
     args = parser.parse_args()
 
     content_id = parse_content_id(args.content)
-    print(f"Content ID: {content_id}")
-
-    folder_name = None
-    files = []
-    account_token = None
-
-    # --- Try API first (unless forced to browser) ---
-    if not args.force_browser:
-        print("Creating guest account...")
-        try:
-            account_token = create_guest_account()
-            print(f"  Token: {account_token[:8]}...")
-        except Exception as e:
-            print(f"  Failed to create guest account: {e}")
-            print("  Falling back to browser scraping...")
-            args.force_browser = True
-
-    if not args.force_browser and account_token:
-        print("Fetching content via API...")
-        data, error = get_content(content_id, account_token, args.password)
-        if data:
-            folder_name = data.get("name", content_id)
-            files = parse_file_tree(data)
-            print(f"  Folder: {folder_name}")
-            print(f"  Files found: {len(files)}")
-        else:
-            print(f"  API error: {error}")
-            if "premium" in str(error).lower():
-                print("  Premium required — falling back to browser scraping...")
-                args.force_browser = True
-            else:
-                print("  Falling back to browser scraping...")
-                args.force_browser = True
-
-    # --- Browser fallback ---
-    if args.force_browser or not files:
-        print("Launching browser to scrape file listing...")
-        try:
-            folder_name, files = scrape_content(content_id, args.password)
-            print(f"  Folder: {folder_name}")
-            print(f"  Files found: {len(files)}")
-        except Exception as e:
-            print(f"  Browser scraping failed: {e}")
-            sys.exit(1)
-
-    if not files:
-        print("No files found. The content may be empty, removed, or require a password.")
+    ok = run(
+        content_id,
+        output_base=args.output,
+        password=args.password,
+        dry_run=args.dry_run,
+        dates_only=args.dates_only,
+        force_browser=args.force_browser,
+    )
+    if not ok:
         sys.exit(1)
-
-    # --- Determine output directory ---
-    if not folder_name:
-        folder_name = content_id
-    output_dir = f"{args.output}/{folder_name}"
-    print(f"\nOutput directory: {output_dir}")
-
-    # --- Dates-only mode ---
-    if args.dates_only:
-        print("\nUpdating file dates only...")
-        update_dates_only(files, output_dir)
-        return
-
-    # --- Download ---
-    print()
-    download_files(files, output_dir, account_token, args.dry_run)
 
 
 if __name__ == "__main__":
