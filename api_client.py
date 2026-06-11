@@ -9,6 +9,7 @@ import sqlite3
 import tempfile
 import time
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 
 import requests
@@ -19,6 +20,44 @@ TOKEN_SALT = "g4f8fd9f12h14g"
 
 TOKEN_CACHE_PATH = Path.home() / ".gofile_dl_token.json"
 TOKEN_MAX_AGE = 24 * 3600  # seconds
+
+
+class GofileUnavailable(Exception):
+    """Gofile can't be used right now (network down, rate-limited, outage,
+    or auth broken in a way a retry won't fix). Callers should stop and
+    retry later rather than continue hammering the API."""
+
+    def __init__(self, message: str, kind: str):
+        super().__init__(message)
+        self.kind = kind  # network | rate_limited | unavailable | wrong_token
+
+
+@dataclass
+class ApiError:
+    """A classified API failure. `kind` is the contract callers branch on;
+    `message` is for display only."""
+
+    kind: str  # network | rate_limited | unavailable | not_found | not_authorized | wrong_token | premium | other
+    message: str
+
+    def __str__(self) -> str:
+        return self.message
+
+
+def _classify_status(gf_status: str) -> str:
+    """Map a gofile status string (e.g. 'error-notFound') to an ApiError kind."""
+    s = gf_status.lower().replace("-", "")
+    if "notfound" in s:
+        return "not_found"
+    if "wrongtoken" in s:
+        return "wrong_token"
+    if "notauthorized" in s or "password" in s:
+        return "not_authorized"
+    if "ratelimit" in s:
+        return "rate_limited"
+    if "premium" in s:
+        return "premium"
+    return "other"
 
 
 def load_cached_token() -> tuple[str, float] | None:
@@ -155,7 +194,12 @@ def _service_down_hint(response) -> str | None:
 
 
 def create_guest_account(max_retries: int = 5) -> str:
-    """Create a guest account and return its token. Retries with backoff on rate limit."""
+    """Create a guest account and return its token. Retries with backoff on rate limit.
+
+    Raises GofileUnavailable when gofile can't be used at all right now
+    (network down, rate-limited after retries, service outage); RuntimeError
+    for unexpected responses.
+    """
     delay = 30
     for attempt in range(max_retries):
         try:
@@ -164,7 +208,9 @@ def create_guest_account(max_retries: int = 5) -> str:
             )
         except (requests.ConnectionError, requests.Timeout) as e:
             if attempt == max_retries - 1:
-                raise
+                raise GofileUnavailable(
+                    f"cannot reach gofile ({type(e).__name__})", "network"
+                ) from e
             print(f"  Connection problem ({type(e).__name__}), retrying in {delay}s...")
             time.sleep(delay)
             delay = min(delay * 2, 300)
@@ -178,10 +224,11 @@ def create_guest_account(max_retries: int = 5) -> str:
             time.sleep(delay)
             delay = min(delay * 2, 300)
             continue
+        hint = _service_down_hint(r)
+        if hint:
+            raise GofileUnavailable(hint, "unavailable")
         if not r.ok:
-            gf_status = _gofile_status(r)
-            hint = _service_down_hint(r)
-            raise RuntimeError(gf_status or hint or f"HTTP {r.status_code}")
+            raise RuntimeError(_gofile_status(r) or f"HTTP {r.status_code}")
         try:
             data = r.json()
         except ValueError:
@@ -189,17 +236,88 @@ def create_guest_account(max_retries: int = 5) -> str:
         if data.get("status") != "ok":
             raise RuntimeError(f"Failed to create guest account: {data}")
         return data["data"]["token"]
-    raise RuntimeError(
-        "Failed to create guest account: rate-limited (429) after retries"
+    raise GofileUnavailable(
+        "rate-limited (429) creating guest account, even after retries", "rate_limited"
     )
 
 
-def get_content(content_id: str, account_token: str, password: str | None = None):
+def acquire_token() -> str | None:
+    """
+    Get a usable account token: disk cache -> Firefox localStorage -> new
+    guest account. The disk cache is the single source of token truth —
+    callers should re-call this (it's cheap) rather than hold a token across
+    long-running work, so a refresh by anyone benefits everyone.
+
+    Returns None when guest creation failed in a way where browser scraping
+    might still work. Raises GofileUnavailable when gofile can't be used at
+    all right now.
+    """
+    cached = load_cached_token()
+    if cached:
+        token, age = cached
+        age_str = f"{int(age / 3600)}h" if age >= 3600 else f"{int(age / 60)}m"
+        print(f"Using cached token ({age_str} old): {token[:8]}...")
+        return token
+
+    firefox_token = extract_firefox_token()
+    if firefox_token:
+        save_token(firefox_token)
+        print(
+            f"Using token from Firefox: {firefox_token[:8]}... (cached for future runs)"
+        )
+        return firefox_token
+
+    print("Creating guest account...")
+    try:
+        token = create_guest_account()
+    except GofileUnavailable:
+        raise
+    except Exception as e:
+        print(f"  Failed to create guest account: {e}")
+        return None
+    save_token(token)
+    print(f"  Token: {token[:8]}... (cached for future runs)")
+    return token
+
+
+def refresh_token(bad_token: str | None) -> str | None:
+    """
+    Replace a token the API rejected: clear the cache, try Firefox, then a
+    new guest account. Saves the replacement to the cache so other callers
+    (and later batch items) pick it up.
+
+    Returns the fresh token, or None if no replacement could be obtained.
+    Raises GofileUnavailable when gofile can't be used at all right now.
+    """
+    clear_token_cache()
+    fresh = extract_firefox_token()
+    if fresh and fresh != bad_token:
+        save_token(fresh)
+        print(f"  Fresh token from Firefox: {fresh[:8]}...")
+        return fresh
+    if fresh == bad_token:
+        print("  Firefox has same token — creating new guest account...")
+    try:
+        token = create_guest_account()
+    except GofileUnavailable:
+        raise
+    except Exception as e:
+        print(f"  Failed to create new account: {e}")
+        return None
+    save_token(token)
+    print(f"  New guest token: {token[:8]}...")
+    return token
+
+
+def get_content(
+    content_id: str, account_token: str, password: str | None = None
+) -> tuple[dict | None, ApiError | None]:
     """
     Fetch folder/file listing from the API.
 
-    Returns (data_dict, None) on success.
-    Returns (None, error_string) on failure (e.g. 'error-notPremium').
+    Returns (data_dict, None) on success, (None, ApiError) on failure.
+    Classification happens here, where the HTTP status and gofile status
+    string are both in hand — callers branch on ApiError.kind, not prose.
     """
     session = _make_session(account_token)
     params = {}
@@ -208,23 +326,29 @@ def get_content(content_id: str, account_token: str, password: str | None = None
 
     try:
         r = session.get(f"{API_BASE}/contents/{content_id}", params=params, timeout=60)
+    except (requests.ConnectionError, requests.Timeout) as e:
+        return None, ApiError("network", f"cannot reach gofile ({type(e).__name__})")
     except requests.exceptions.RequestException as e:
-        return None, str(e)
-
-    if not r.ok:
-        gf_status = _gofile_status(r)
-        hint = _service_down_hint(r)
-        return None, gf_status or hint or f"HTTP {r.status_code}"
+        return None, ApiError("other", str(e))
 
     try:
         body = r.json()
     except ValueError:
-        hint = _service_down_hint(r)
-        return None, hint or "non-JSON response from API"
+        body = None
 
-    if body.get("status") == "ok":
+    gf_status = (body or {}).get("status")
+    if gf_status == "ok":
         return body["data"], None
-    return None, body.get("status", "unknown-error")
+    if gf_status:
+        return None, ApiError(_classify_status(gf_status), gf_status)
+    if r.status_code == 429:
+        return None, ApiError("rate_limited", "HTTP 429 Too Many Requests")
+    hint = _service_down_hint(r)
+    if hint:
+        return None, ApiError("unavailable", hint)
+    if not r.ok:
+        return None, ApiError("other", f"HTTP {r.status_code}")
+    return None, ApiError("other", "non-JSON response from API")
 
 
 def parse_file_tree(

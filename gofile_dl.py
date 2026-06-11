@@ -7,6 +7,9 @@ Usage:
     python gofile_dl.py https://gofile.io/d/PjUhkl
     python gofile_dl.py PjUhkl --output /mnt/r/gofile
     python gofile_dl.py PjUhkl --dry-run
+
+Exit code is 1 when the content can't be fetched or any file fails to
+download (a real download attempt, not --dry-run reporting).
 """
 
 import argparse
@@ -22,12 +25,11 @@ if sys.stderr.encoding and sys.stderr.encoding.lower() != "utf-8":
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 from api_client import (
-    clear_token_cache,
-    create_guest_account,
-    extract_firefox_token,
+    GofileUnavailable,
+    acquire_token,
     get_content,
-    load_cached_token,
     parse_file_tree,
+    refresh_token,
     save_token,
 )
 from browser_scraper import scrape_content
@@ -49,57 +51,6 @@ def parse_content_id(input_str: str) -> str:
     raise ValueError(f"Cannot parse content ID from: {input_str}")
 
 
-def _normalize_error(error) -> str:
-    return str(error).lower().replace("-", "")
-
-
-def _looks_like_connection_error(error) -> bool:
-    err = str(error).lower()
-    return any(
-        marker in err
-        for marker in ("connectionpool", "connection aborted", "timed out", "timeout")
-    )
-
-
-def _acquire_token() -> tuple[str | None, bool]:
-    """Get an account token: cached -> Firefox -> new guest account.
-
-    Returns (token, fall_back_to_browser). token is None when acquisition
-    failed; fall_back_to_browser says whether browser scraping is worth trying.
-    """
-    cached = load_cached_token()
-    if cached:
-        token, age = cached
-        age_str = f"{int(age / 3600)}h" if age >= 3600 else f"{int(age / 60)}m"
-        print(f"Using cached token ({age_str} old): {token[:8]}...")
-        return token, False
-
-    firefox_token = extract_firefox_token()
-    if firefox_token:
-        save_token(firefox_token)
-        print(
-            f"Using token from Firefox: {firefox_token[:8]}... (cached for future runs)"
-        )
-        return firefox_token, False
-
-    print("Creating guest account...")
-    try:
-        token = create_guest_account()
-    except Exception as e:
-        msg = str(e)
-        print(f"  Failed to create guest account: {msg}")
-        if "unavailable" in msg.lower() or "retry later" in msg.lower():
-            return None, False
-        if "ratelimit" in _normalize_error(msg):
-            print("  Rate limited — please wait a few minutes and retry.")
-            return None, False
-        print("  Falling back to browser scraping...")
-        return None, True
-    save_token(token)
-    print(f"  Token: {token[:8]}... (cached for future runs)")
-    return token, False
-
-
 def run(
     content_id: str,
     output_base: str = DEFAULT_OUTPUT,
@@ -107,59 +58,43 @@ def run(
     dry_run: bool = False,
     dates_only: bool = False,
     force_browser: bool = False,
-    account_token: str | None = None,
 ) -> bool:
     """Download a single gofile content ID. Returns True on success.
 
-    Pass account_token to reuse an existing account (avoids gofile's
-    rate limit on account creation when downloading many IDs in one run).
+    The account token comes from api_client.acquire_token() (disk cache ->
+    Firefox -> guest account); the disk cache is the single source of token
+    truth, so batch callers don't pass a token — a refresh during one item
+    is picked up by the next.
+
+    Raises GofileUnavailable when gofile can't be used at all right now
+    (network down, rate-limited, outage, or auth systemically broken) so
+    batch callers can abort instead of grinding through every remaining ID.
     """
     print(f"Content ID: {content_id}")
 
     folder_name = None
     files = []
     folders = []
+    account_token = None
     api_succeeded = False
 
-    # --- Acquire a token unless the caller supplied one ---
-    if not force_browser and not account_token:
-        account_token, fall_back = _acquire_token()
-        if account_token is None and not fall_back:
-            return False
-        force_browser = force_browser or fall_back
-
     # --- Try API first (unless forced to browser) ---
-    if not force_browser and account_token:
+    if not force_browser:
+        account_token = acquire_token()
+        if account_token is None:
+            print("  Falling back to browser scraping...")
+            force_browser = True
+
+    if not force_browser:
         print("Fetching content via API...")
-        data, error = None, None
-        for _attempt in range(2):
-            data, error = get_content(content_id, account_token, password)
-            if data:
-                break
-            # Wrong token (e.g. invalidated during a service outage): refresh and retry once
-            if "wrongtoken" in _normalize_error(error) and _attempt == 0:
-                bad_token = account_token
-                print("  Token rejected (wrong/expired) — fetching fresh token...")
-                clear_token_cache()
-                fresh = extract_firefox_token()
-                if fresh and fresh != bad_token:
-                    account_token = fresh
-                    save_token(fresh)
-                    print(f"  Fresh token from Firefox: {fresh[:8]}...")
-                else:
-                    if fresh == bad_token:
-                        print(
-                            "  Firefox has same token — creating new guest account..."
-                        )
-                    try:
-                        account_token = create_guest_account()
-                        save_token(account_token)
-                        print(f"  New guest token: {account_token[:8]}...")
-                    except Exception as e:
-                        print(f"  Failed to create new account: {e}")
-                        break
-                continue
-            break
+        data, error = get_content(content_id, account_token, password)
+        if error is not None and error.kind == "wrong_token":
+            # e.g. invalidated during a service outage: refresh and retry once
+            print("  Token rejected (wrong/expired) — fetching fresh token...")
+            fresh = refresh_token(account_token)
+            if fresh:
+                account_token = fresh
+                data, error = get_content(content_id, account_token, password)
 
         if data:
             api_succeeded = True
@@ -171,30 +106,30 @@ def run(
                 print(f"  Subfolders found: {len(folders)}")
         else:
             print(f"  API error: {error}")
-            err = _normalize_error(error)
-            if "notfound" in err:
+            if error.kind == "not_found":
                 print(
                     f"  Content '{content_id}' does not exist — it may have been deleted or expired."
                 )
                 return False
-            if "notauthorized" in err:
+            if error.kind == "not_authorized":
                 print(
-                    "  Token rejected — clearing cached token. Retry to get a fresh one."
+                    "  Content is not accessible with this account — it may be "
+                    "private or password-protected (try --password)."
                 )
-                clear_token_cache()
                 return False
-            if "ratelimit" in err:
-                print("  Rate limited — please wait a few minutes and retry.")
-                return False
-            if (
-                "unavailable" in str(error).lower()
-                or "retry later" in str(error).lower()
-            ):
-                return False
-            if _looks_like_connection_error(error):
-                # Network problem — the browser can't reach gofile either
-                return False
-            if "premium" in str(error).lower():
+            if error.kind == "wrong_token":
+                # Still rejected after a refresh: systemic auth breakage, most
+                # likely a rotated website-token salt. Hammering on won't help.
+                raise GofileUnavailable(
+                    "token rejected even after refresh — gofile may have rotated "
+                    "the website-token salt (re-extract from wt.obf.js, see CLAUDE.md)",
+                    "wrong_token",
+                )
+            if error.kind in ("rate_limited", "unavailable", "network"):
+                # Global conditions: the browser can't reach gofile either,
+                # and retrying other IDs right now only makes it worse.
+                raise GofileUnavailable(str(error), error.kind)
+            if error.kind == "premium":
                 print("  Premium required — falling back to browser scraping...")
             else:
                 print("  Falling back to browser scraping...")
@@ -308,18 +243,24 @@ def main():
     args = parser.parse_args()
 
     content_id = parse_content_id(args.content)
-    if args.token:
+    # Seed the token cache with the user's token — but only when this run will
+    # actually exercise it; --force-browser would cache it unvalidated.
+    if args.token and not args.force_browser:
         save_token(args.token)
         print(f"Using provided token: {args.token[:8]}... (cached for future runs)")
-    ok = run(
-        content_id,
-        output_base=args.output,
-        password=args.password,
-        dry_run=args.dry_run,
-        dates_only=args.dates_only,
-        force_browser=args.force_browser,
-        account_token=args.token,
-    )
+    try:
+        ok = run(
+            content_id,
+            output_base=args.output,
+            password=args.password,
+            dry_run=args.dry_run,
+            dates_only=args.dates_only,
+            force_browser=args.force_browser,
+        )
+    except GofileUnavailable as e:
+        print(f"\nGofile unavailable: {e}")
+        print("Please retry later.")
+        sys.exit(1)
     if not ok:
         sys.exit(1)
 

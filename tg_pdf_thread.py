@@ -25,7 +25,7 @@ import time
 
 import requests
 
-from api_client import create_guest_account, load_cached_token, save_token
+from api_client import GofileUnavailable, acquire_token
 from gofile_dl import DEFAULT_OUTPUT
 from gofile_dl import run as download_gofile
 
@@ -84,7 +84,10 @@ def find_pdf_share_thread() -> int:
     print("Not in the live catalog — checking recently archived threads...")
     archive = _get_json(f"{API_BASE}/{BOARD}/archive.json")
     for thread_no in reversed(archive[-30:]):
-        posts = fetch_thread(thread_no)
+        try:
+            posts = fetch_thread(thread_no)
+        except requests.RequestException:
+            continue  # transient failure on one archived thread — keep scanning
         if posts:
             subject = html.unescape(posts[0].get("sub", "")).lower()
             if THREAD_TITLE in subject:
@@ -132,13 +135,48 @@ def extract_gofile_ids(posts: list[dict]) -> list[tuple[str, int]]:
     return found
 
 
-def find_previous_thread(posts: list[dict]) -> int | None:
-    """Find the previous-thread link in the OP, if any."""
+def find_linked_threads(posts: list[dict]) -> list[int]:
+    """All cross-thread quotelinks in the OP, in order of appearance."""
     if not posts:
-        return None
-    op_com = posts[0].get("com", "")
-    m = PREV_THREAD_RE.search(op_com)
-    return int(m.group(1)) if m else None
+        return []
+    out: list[int] = []
+    for m in PREV_THREAD_RE.finditer(posts[0].get("com", "")):
+        n = int(m.group(1))
+        if n not in out:
+            out.append(n)
+    return out
+
+
+def find_previous_pdf_thread(
+    posts: list[dict], visited: set[int]
+) -> tuple[int, list[dict]] | None:
+    """
+    Follow the OP's cross-thread quotelinks to the previous PDF Share Thread.
+
+    OPs often link several threads (related generals, resource threads), so
+    fetch each candidate in order of appearance and take the first whose
+    subject matches, instead of blindly trusting the first link.
+
+    Returns (thread_no, posts) so the caller doesn't re-fetch, or None.
+    """
+    for cand in find_linked_threads(posts):
+        if cand in visited:
+            continue
+        try:
+            cand_posts = fetch_thread(cand)
+        except requests.RequestException as e:
+            print(f"4chan API error fetching linked thread {cand}: {e}")
+            return None
+        if cand_posts:
+            subject = html.unescape(cand_posts[0].get("sub", ""))
+            if THREAD_TITLE in subject.lower():
+                return cand, cand_posts
+            print(
+                f"  Skipping linked thread {cand} "
+                f"('{subject or '(no subject)'}') — not a PDF Share Thread"
+            )
+        time.sleep(1)  # 4chan API rate-limit courtesy
+    return None
 
 
 def main():
@@ -182,20 +220,34 @@ def main():
         thread_no = parse_thread_arg(args.thread)
     else:
         print(f"Searching /{BOARD}/ catalog for the PDF Share Thread...")
-        thread_no = find_pdf_share_thread()
+        try:
+            thread_no = find_pdf_share_thread()
+        except requests.RequestException as e:
+            print(f"4chan API error while searching for the thread: {e}")
+            sys.exit(1)
+        except RuntimeError as e:
+            print(e)
+            sys.exit(1)
     print(f"Starting thread: https://boards.4chan.org/{BOARD}/thread/{thread_no}")
 
     # --- Walk threads, collecting IDs (oldest thread first so downloads are chronological) ---
     all_ids: list[tuple[str, int, int]] = []  # (content_id, post_no, thread_no)
     seen_ids = set()
-    visited_threads = set()
+    visited_threads: set[int] = set()
+    depth = max(1, args.depth)
+    posts = None  # posts for thread_no; the previous-thread lookup pre-fetches them
 
-    for _ in range(max(1, args.depth)):
-        if thread_no in visited_threads:
-            break
+    for depth_i in range(depth):
         visited_threads.add(thread_no)
-
-        posts = fetch_thread(thread_no)
+        if posts is None:
+            try:
+                posts = fetch_thread(thread_no)
+            except requests.RequestException as e:
+                print(
+                    f"4chan API error fetching thread {thread_no}: {e} — "
+                    f"continuing with IDs collected so far."
+                )
+                break
         if not posts:
             print(f"Thread {thread_no} is gone (404) — stopping.")
             break
@@ -208,12 +260,15 @@ def main():
             f"Thread {thread_no}: {len(posts)} posts, {len(ids)} gofile IDs ({len(fresh)} new)"
         )
 
-        prev = find_previous_thread(posts)
-        if prev is None:
-            print("No previous-thread link found in OP.")
+        if depth_i == depth - 1:
             break
-        thread_no = prev
         time.sleep(1)  # 4chan API rate-limit courtesy
+
+        prev = find_previous_pdf_thread(posts, visited_threads)
+        if prev is None:
+            print("No previous PDF Share Thread link found in OP.")
+            break
+        thread_no, posts = prev
 
     if not all_ids:
         print("No gofile IDs found.")
@@ -226,17 +281,18 @@ def main():
     if args.list_only:
         return
 
-    # --- One shared token for all downloads (gofile rate-limits account creation) ---
-    cached = load_cached_token()
-    if cached:
-        account_token, age = cached
-        age_str = f"{int(age / 3600)}h" if age >= 3600 else f"{int(age / 60)}m"
-        print(f"\nUsing cached gofile token ({age_str} old): {account_token[:8]}...")
-    else:
-        print("\nCreating shared gofile guest account...")
-        account_token = create_guest_account()
-        save_token(account_token)
-        print(f"  Token: {account_token[:8]}...")
+    # --- Warm the shared token cache before the batch (gofile rate-limits
+    # account creation; each download_gofile call reads the cache, so one
+    # token — refreshed at most once — serves the whole run) ---
+    print()
+    try:
+        if acquire_token() is None:
+            print("Could not obtain a gofile token — aborting before downloads.")
+            sys.exit(1)
+    except GofileUnavailable as e:
+        print(f"Gofile unavailable: {e}")
+        print("Please retry later.")
+        sys.exit(1)
 
     # --- Download each ---
     succeeded, failed = [], []
@@ -245,16 +301,11 @@ def main():
         print(f"[{i}/{len(all_ids)}] gofile.io/d/{cid}")
         print("=" * 60)
         try:
-            ok = download_gofile(
-                cid,
-                output_base=args.output,
-                dry_run=args.dry_run,
-                account_token=account_token,
-            )
+            ok = download_gofile(cid, output_base=args.output, dry_run=args.dry_run)
         except KeyboardInterrupt:
             raise
-        except (requests.ConnectionError, requests.Timeout) as e:
-            print(f"Connection to gofile lost ({type(e).__name__}) — aborting run.")
+        except GofileUnavailable as e:
+            print(f"Gofile unavailable ({e}) — aborting run.")
             print("Re-run later; already-downloaded files will be skipped.")
             failed.extend(c for c, _, _ in all_ids[i - 1 :])
             break
