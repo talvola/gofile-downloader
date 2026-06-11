@@ -25,7 +25,7 @@ import time
 
 import requests
 
-from api_client import create_guest_account
+from api_client import create_guest_account, load_cached_token, save_token
 from gofile_dl import DEFAULT_OUTPUT
 from gofile_dl import run as download_gofile
 
@@ -67,7 +67,7 @@ def parse_thread_arg(input_str: str) -> int:
 
 
 def find_pdf_share_thread() -> int:
-    """Search the /tg/ catalog for the newest PDF Share Thread."""
+    """Search the /tg/ catalog (then recently archived threads) for the newest PDF Share Thread."""
     catalog = _get_json(f"{API_BASE}/{BOARD}/catalog.json")
     matches = []
     for page in catalog:
@@ -75,10 +75,24 @@ def find_pdf_share_thread() -> int:
             subject = html.unescape(thread.get("sub", "")).lower()
             if THREAD_TITLE in subject:
                 matches.append(thread["no"])
-    if not matches:
-        raise RuntimeError(f"No '{THREAD_TITLE}' found in /{BOARD}/ catalog")
-    # Newest thread = highest post number
-    return max(matches)
+    if matches:
+        # Newest thread = highest post number
+        return max(matches)
+
+    # Between threads (old one archived, successor not posted yet) the catalog
+    # has no match — scan the newest archived threads for it.
+    print("Not in the live catalog — checking recently archived threads...")
+    archive = _get_json(f"{API_BASE}/{BOARD}/archive.json")
+    for thread_no in reversed(archive[-30:]):
+        posts = fetch_thread(thread_no)
+        if posts:
+            subject = html.unescape(posts[0].get("sub", "")).lower()
+            if THREAD_TITLE in subject:
+                return thread_no
+        time.sleep(1)
+    raise RuntimeError(
+        f"No '{THREAD_TITLE}' found in /{BOARD}/ catalog or recent archive"
+    )
 
 
 def fetch_thread(thread_no: int) -> list[dict]:
@@ -212,10 +226,17 @@ def main():
     if args.list_only:
         return
 
-    # --- One shared guest account for all downloads (gofile rate-limits account creation) ---
-    print("\nCreating shared gofile guest account...")
-    account_token = create_guest_account()
-    print(f"  Token: {account_token[:8]}...")
+    # --- One shared token for all downloads (gofile rate-limits account creation) ---
+    cached = load_cached_token()
+    if cached:
+        account_token, age = cached
+        age_str = f"{int(age / 3600)}h" if age >= 3600 else f"{int(age / 60)}m"
+        print(f"\nUsing cached gofile token ({age_str} old): {account_token[:8]}...")
+    else:
+        print("\nCreating shared gofile guest account...")
+        account_token = create_guest_account()
+        save_token(account_token)
+        print(f"  Token: {account_token[:8]}...")
 
     # --- Download each ---
     succeeded, failed = [], []
