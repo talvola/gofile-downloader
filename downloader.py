@@ -82,8 +82,13 @@ def download_files(
                 continue
 
         if not link:
-            print(f"{prefix} — ERROR: no download link")
-            errors += 1
+            # In a dry run nothing was attempted, so report without failing
+            # the exit code; a real run counts it as an error.
+            if dry_run:
+                print(f"{prefix} — DRY RUN (no download link — would fail)")
+            else:
+                print(f"{prefix} — ERROR: no download link")
+                errors += 1
             continue
 
         if dry_run:

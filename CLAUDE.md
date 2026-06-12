@@ -23,28 +23,41 @@ python gofile_dl.py PjUhkl --password secret
 python gofile_dl.py PjUhkl --dry-run
 python gofile_dl.py PjUhkl --dates-only
 python gofile_dl.py PjUhkl --force-browser
+
+python tg_pdf_thread.py                  # batch: scrape /tg/ PDF Share Thread, download all gofile links
+python tg_pdf_thread.py --list-only      # just show the IDs found (no gofile contact)
+python tg_pdf_thread.py --dry-run        # fetch listings, write nothing
 ```
 
 ## Architecture
 
-Four modules with a strict dependency order:
+Five modules with a strict dependency order:
 
 ```
-gofile_dl.py          ← CLI entry point / orchestrator
-  api_client.py       ← Gofile REST API (guest auth, content listing, tree walk)
-  browser_scraper.py  ← Playwright fallback (only when API fails)
-  downloader.py       ← File download, skip logic, date setting, orphan detection
+tg_pdf_thread.py        ← batch driver: scrapes 4chan /tg/ for gofile IDs, calls run() per ID
+  gofile_dl.py          ← CLI entry point / orchestrator (exposes run())
+    api_client.py       ← Gofile REST API (token lifecycle, content listing, tree walk, error classification)
+    browser_scraper.py  ← Playwright fallback (only when API fails)
+    downloader.py       ← File download, skip logic, date setting, orphan detection
 ```
 
 **Execution flow:**
-1. `gofile_dl.py` parses the content ID, creates a guest account, calls the API
+1. `gofile_dl.py` parses the content ID, gets a token via `api_client.acquire_token()` (disk cache → Firefox localStorage → new guest account), calls the API
 2. If the API succeeds, `parse_file_tree` recursively flattens the folder tree into `files[]` and `folders[]` lists
 3. If the API fails (not if it succeeds with 0 files — that means private subfolders), the Playwright scraper is tried instead
 4. `downloader.py` writes files to `{output}/{folder_name}/`, skipping by exact size match, setting timestamps from `create_time`
 
 ## Key design decisions
 
-**API-first, browser-never-on-success:** The browser fallback is only invoked when the API genuinely fails. A successful API response with 0 files means private subfolders — running the browser scraper there would download garbage HTML masquerading as a successful sync.
+**API-first, browser-never-on-success:** The browser fallback is only invoked when the API genuinely fails. A successful API response with 0 files means private subfolders — running the browser scraper there would download garbage HTML masquerading as a successful sync. Global failures (network down, rate-limited, outage, post-refresh wrongToken) never fall back to the browser either — the browser can't reach gofile any better, and retrying makes rate limits worse.
+
+**Structured API errors:** `get_content` returns `(data, ApiError|None)`; the error `kind` (`network`/`rate_limited`/`unavailable`/`not_found`/`not_authorized`/`wrong_token`/`premium`/`other`) is classified once in `api_client.py` where the HTTP status and gofile status string are in hand. Callers branch on `kind`, never on message prose. `not_authorized` is a content-level condition (private/password-protected), NOT a token problem — don't clear the token cache on it.
+
+**Token single source of truth:** The disk cache (`~/.gofile_dl_token.json`) is the one authority. `acquire_token()`/`refresh_token()` in `api_client.py` own the lifecycle (cache → Firefox → guest account); `run()` re-reads the cache per call instead of holding a caller-frozen token, so a mid-batch refresh by one item is picked up by the next. Batch callers must NOT pass tokens around.
+
+**GofileUnavailable aborts batches:** `run()` raises `api_client.GofileUnavailable` (kind: network/rate_limited/unavailable/wrong_token-after-refresh) for conditions where processing more IDs is futile or harmful; `tg_pdf_thread.py` catches it and aborts the whole batch. Per-content failures (`not_found`, `not_authorized`, empty) just `return False` and the batch continues.
+
+**Exit codes:** `gofile_dl.py` exits 1 when content can't be fetched or any file fails a real download attempt; `--dry-run` reports link-less files without failing the exit code.
 
 **Skip logic (downloader.py `download_files`):** Skip if `local_size == remote_size`. Re-download if sizes differ. Skip with warning if no remote size available and local file is non-empty. Always update timestamps even for skipped files.
 
@@ -59,3 +72,5 @@ gofile_dl.py          ← CLI entry point / orchestrator
 **Website token:** The `X-Website-Token` header is a SHA-256 of `"{UA}::en-US::{token}::{time_slot}::{salt}"` where `time_slot = int(time.time() / 14400)`. Reverse-engineered from `https://gofile.io/dist/js/wt.obf.js` (`generateWT` function). The salt rotates when gofile updates the file — if API calls start returning `error-wrongToken` on fresh tokens, re-extract: fetch `wt.obf.js`, patch `_sha256` to log its input, call `generateWT(anyToken)` in Node.js, and read the last `::` segment. Current salt as of 2026-05-25: `g4f8fd9f12h14g`. UA must match `DEFAULT_UA` in `api_client.py` (currently Firefox 151.0).
 
 **Firefox token extraction:** Prefers `appdataAccount` key in localStorage (active session) over `accountsObject` (may contain stale tokens). Using the wrong key produces a valid-looking token that generates a mismatched `X-Website-Token`.
+
+**Thread discovery (tg_pdf_thread.py):** Searches the live /tg/ catalog by subject, then falls back to scanning the ~30 newest archived threads (covers the gap between a thread archiving and its successor being posted). Previous-thread links are followed only if the linked thread's subject actually matches `THREAD_TITLE` — OPs often quote-link unrelated threads. 4chan API failures mid-walk keep the IDs already collected rather than crashing.
