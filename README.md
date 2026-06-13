@@ -89,6 +89,7 @@ skip logic.
   listing still shows them but the download returns 403 from a `cold-*`
   host. Retrieving those requires importing the file into a premium
   account; this tool just reports them as failed.
-- **`error-wrongToken` on fresh tokens** usually means gofile rotated the
-  salt in their website-token scheme. See CLAUDE.md ("Website token") for
-  how to re-extract it from `wt.obf.js`.
+- **`error-wrongToken` on fresh tokens — or `error-notPremium` on content
+  that opens fine in a browser** — usually means gofile rotated the salt in
+  their website-token scheme. See CLAUDE.md ("Website token") for how to
+  re-extract it from `wt.obf.js`.

@@ -16,7 +16,7 @@ import requests
 
 API_BASE = "https://api.gofile.io"
 WEBSITE_ORIGIN = "https://gofile.io"
-TOKEN_SALT = "g4f8fd9f12h14g"
+TOKEN_SALT = "9844d94d963d30"
 
 TOKEN_CACHE_PATH = Path.home() / ".gofile_dl_token.json"
 TOKEN_MAX_AGE = 24 * 3600  # seconds

@@ -130,7 +130,12 @@ def run(
                 # and retrying other IDs right now only makes it worse.
                 raise GofileUnavailable(str(error), error.kind)
             if error.kind == "premium":
-                print("  Premium required — falling back to browser scraping...")
+                print(
+                    "  Premium required — falling back to browser scraping...\n"
+                    "  (If this content opens fine in a normal browser, the "
+                    "website-token salt has likely rotated — see CLAUDE.md "
+                    "'Website token' to re-extract it from wt.obf.js.)"
+                )
             else:
                 print("  Falling back to browser scraping...")
             force_browser = True
