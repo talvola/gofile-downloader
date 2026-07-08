@@ -21,6 +21,18 @@ TOKEN_SALT = "9844d94d963d30"
 TOKEN_CACHE_PATH = Path.home() / ".gofile_dl_token.json"
 TOKEN_MAX_AGE = 24 * 3600  # seconds
 
+# Walking a folder tree fires one API call per subfolder. Big folders (100+
+# subfolders are real — see the /tg/ share dumps) exhaust gofile's rate limit,
+# which behaves like a refilling quota bucket rather than a fixed count: a run
+# blocked at subfolder ~20 one time and ~95 the next, depending on how full the
+# bucket was to start. So (a) space calls out to consume the bucket slower than
+# it refills, and (b) when a call is still rate-limited, wait long enough to let
+# the bucket refill before retrying. Dropping a rate-limited subfolder is not an
+# option — it silently omits every file under it from an otherwise "successful"
+# sync (and those files then surface as false orphans).
+SUBFOLDER_FETCH_DELAY = 1.0  # seconds paused before each subfolder API call
+SUBFOLDER_RETRY_DELAYS = (15, 30, 60, 90)  # backoff before each rate-limit retry
+
 
 class GofileUnavailable(Exception):
     """Gofile can't be used right now (network down, rate-limited, outage,
@@ -415,6 +427,37 @@ def _suffix_path(path: str, suffix: str) -> str:
     return f"{dirname}{basename} ({suffix})"
 
 
+def _fetch_subfolder(
+    folder_code: str, account_token: str, password: str | None
+) -> tuple[dict | None, ApiError | None]:
+    """
+    Fetch a subfolder's contents, throttling and retrying on rate-limit.
+
+    A short pause precedes every call so a folder with many subfolders doesn't
+    fire requests fast enough to trip the limit in the first place. If a call
+    still comes back rate-limited, it's retried with backoff — dropping the
+    subfolder would silently omit all its files from an otherwise "successful"
+    sync. If every retry is exhausted the IP is being throttled/temp-banned;
+    raise GofileUnavailable so the caller aborts rather than write a partial
+    tree that looks complete.
+    """
+    time.sleep(SUBFOLDER_FETCH_DELAY)
+    data, err = get_content(folder_code, account_token, password)
+    for delay in SUBFOLDER_RETRY_DELAYS:
+        if err is None or err.kind != "rate_limited":
+            return data, err
+        print(f"    Rate-limited on subfolder — retrying in {delay}s...")
+        time.sleep(delay)
+        data, err = get_content(folder_code, account_token, password)
+    if err is not None and err.kind == "rate_limited":
+        raise GofileUnavailable(
+            "gofile rate-limited subfolder fetches even after retries "
+            "(the IP is likely temp-banned) — stopping to avoid a partial sync",
+            "rate_limited",
+        )
+    return data, err
+
+
 def _walk(
     node: dict,
     prefix: str,
@@ -475,7 +518,7 @@ def _walk(
     if not children and node.get("code") and account_token:
         folder_code = node["code"]
         print(f"  Fetching subfolder: {folder_name} ({folder_code})...")
-        sub_data, err = get_content(folder_code, account_token, password)
+        sub_data, err = _fetch_subfolder(folder_code, account_token, password)
         if sub_data:
             children = sub_data.get("children", {})
             if isinstance(children, dict):

@@ -57,6 +57,8 @@ tg_pdf_thread.py        ← batch driver: scrapes 4chan /tg/ for gofile IDs, cal
 
 **GofileUnavailable aborts batches:** `run()` raises `api_client.GofileUnavailable` (kind: network/rate_limited/unavailable/wrong_token-after-refresh) for conditions where processing more IDs is futile or harmful; `tg_pdf_thread.py` catches it and aborts the whole batch. Per-content failures (`not_found`, `not_authorized`, empty) just `return False` and the batch continues.
 
+**Subfolder-fetch throttle (`_fetch_subfolder` in api_client.py):** Walking a tree fires one API call per subfolder; a folder with 20+ subfolders trips gofile's rate limit if the calls go back-to-back. Each fetch is preceded by a short pause (`SUBFOLDER_FETCH_DELAY`) and retried with backoff (`SUBFOLDER_RETRY_DELAYS`) on `error-rateLimit`. Dropping a rate-limited subfolder is NOT acceptable — it silently omits every file under it while `run()` still reports success (and those files then show up as false orphans). If retries are exhausted the IP is being throttled/temp-banned, so `_fetch_subfolder` raises `GofileUnavailable(rate_limited)`, which propagates through `_walk`→`parse_file_tree`→`run()` to abort the batch rather than persist a partial tree.
+
 **Exit codes:** `gofile_dl.py` exits 1 when content can't be fetched or any file fails a real download attempt; `--dry-run` reports link-less files without failing the exit code.
 
 **Skip logic (downloader.py `download_files`):** Skip if `local_size == remote_size`. Re-download if sizes differ. Skip with warning if no remote size available and local file is non-empty. Always update timestamps even for skipped files.
