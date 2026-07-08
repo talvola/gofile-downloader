@@ -21,12 +21,17 @@ TOKEN_SALT = "9844d94d963d30"
 TOKEN_CACHE_PATH = Path.home() / ".gofile_dl_token.json"
 TOKEN_MAX_AGE = 24 * 3600  # seconds
 
-# Walking a folder tree fires one API call per subfolder. Folders with 20+
-# subfolders will trip gofile's rate limit if fired back-to-back, so space the
-# calls out and retry (with backoff) any that still come back rate-limited —
-# a dropped subfolder silently omits all its files from the sync.
-SUBFOLDER_FETCH_DELAY = 0.6  # seconds paused before each subfolder API call
-SUBFOLDER_RETRY_DELAYS = (5, 10, 20, 40)  # backoff before each rate-limit retry
+# Walking a folder tree fires one API call per subfolder. Big folders (100+
+# subfolders are real — see the /tg/ share dumps) exhaust gofile's rate limit,
+# which behaves like a refilling quota bucket rather than a fixed count: a run
+# blocked at subfolder ~20 one time and ~95 the next, depending on how full the
+# bucket was to start. So (a) space calls out to consume the bucket slower than
+# it refills, and (b) when a call is still rate-limited, wait long enough to let
+# the bucket refill before retrying. Dropping a rate-limited subfolder is not an
+# option — it silently omits every file under it from an otherwise "successful"
+# sync (and those files then surface as false orphans).
+SUBFOLDER_FETCH_DELAY = 1.0  # seconds paused before each subfolder API call
+SUBFOLDER_RETRY_DELAYS = (15, 30, 60, 90)  # backoff before each rate-limit retry
 
 
 class GofileUnavailable(Exception):
