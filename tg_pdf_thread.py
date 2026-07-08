@@ -33,6 +33,15 @@ API_BASE = "https://a.4cdn.org"
 BOARD = "tg"
 THREAD_TITLE = "pdf share thread"
 
+# When the live catalog has no PDF Share Thread (old one archived, successor
+# not posted yet), scan back through the archive newest-first for it. The gap
+# can be large on a busy board — /tg/ archived 30+ other threads before a
+# successor appeared in one observed case — so scan deep. archive.json only
+# gives thread numbers (no subjects), so each candidate must be fetched; the
+# scan early-exits on the first (newest) match, so this cap only bounds the
+# rare case where no PDF thread exists in the archive at all.
+ARCHIVE_SCAN_LIMIT = 150
+
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -80,10 +89,15 @@ def find_pdf_share_thread() -> int:
         return max(matches)
 
     # Between threads (old one archived, successor not posted yet) the catalog
-    # has no match — scan the newest archived threads for it.
-    print("Not in the live catalog — checking recently archived threads...")
+    # has no match — scan archived threads newest-first for it.
     archive = _get_json(f"{API_BASE}/{BOARD}/archive.json")
-    for thread_no in reversed(archive[-30:]):
+    # archive.json is oldest-first; reverse for newest-first, cap the depth.
+    candidates = list(reversed(archive))[:ARCHIVE_SCAN_LIMIT]
+    print(
+        f"Not in the live catalog — scanning up to {len(candidates)} "
+        f"archived threads (newest first)..."
+    )
+    for i, thread_no in enumerate(candidates, 1):
         try:
             posts = fetch_thread(thread_no)
         except requests.RequestException:
@@ -91,10 +105,12 @@ def find_pdf_share_thread() -> int:
         if posts:
             subject = html.unescape(posts[0].get("sub", "")).lower()
             if THREAD_TITLE in subject:
+                print(f"  Found it in the archive after {i} thread(s).")
                 return thread_no
         time.sleep(1)
     raise RuntimeError(
-        f"No '{THREAD_TITLE}' found in /{BOARD}/ catalog or recent archive"
+        f"No '{THREAD_TITLE}' found in /{BOARD}/ catalog or the "
+        f"{len(candidates)} newest archived threads"
     )
 
 
