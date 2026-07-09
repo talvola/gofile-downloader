@@ -1,2 +1,6 @@
 __pycache__/
 *.pyc
+
+# runtime logs and local git worktrees
+rclone.log
+.claude/worktrees/
