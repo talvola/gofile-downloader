@@ -48,11 +48,23 @@ USER_AGENT = (
     "Chrome/131.0.0.0 Safari/537.36"
 )
 
-# gofile content IDs are 6 alphanumeric chars after /d/, in both plain
-# (gofile.io/d/AS3dnB) and obfuscated (g0f1le /d/3tDCbP) posts.
-# The (?![A-Za-z0-9]) guard rejects longer IDs from other services
-# (e.g. Google Drive's /d/<33 chars>).
-GOFILE_ID_RE = re.compile(r"/d/\s*([A-Za-z0-9]{6})(?![A-Za-z0-9])")
+# gofile content IDs are 6 alphanumeric chars. Two accepted forms:
+#
+# 1. d/ form — the canonical gofile.io/d/AS3dnB, the bare /d/AS3dnB, the
+#    obfuscated "g0f1le /d/3tDCbP", AND the leading-slash-dropped "d/GDeWzi"
+#    (seen in the wild). We anchor on "d/" preceded by whitespace, a slash, or
+#    string start so a word ending in "d" (e.g. "read/foobar") can't match.
+#    The (?![A-Za-z0-9]) guard rejects longer IDs from other services
+#    (e.g. Google Drive's /d/<33 chars>).
+GOFILE_DFORM_RE = re.compile(r"(?:^|(?<=[\s/]))d/\s*([A-Za-z0-9]{6})(?![A-Za-z0-9])")
+
+# 2. Bare "/XXXXXX" with no d/ — trusted ONLY when the slash is whitespace- or
+#    line-bounded on the left and the 6 chars are whitespace-/line-bounded on
+#    the right. Without those anchors every mid-URL path segment (e.g.
+#    drivethrurpg.com/product/564646/…) would masquerade as a gofile ID; with
+#    them, a lone "/slug" posted on its own (e.g. "This one?\n/3BKw5y") still
+#    matches while the false positives vanish.
+GOFILE_BARE_RE = re.compile(r"(?:^|(?<=\s))/([A-Za-z0-9]{6})(?=\s|$)", re.MULTILINE)
 
 # Cross-thread quotelinks in post HTML look like:
 #   <a href="/tg/thread/98130506#p98130506" class="quotelink">&gt;&gt;98130506</a>
@@ -143,11 +155,21 @@ def extract_gofile_ids(posts: list[dict]) -> list[tuple[str, int]]:
         if not com:
             continue
         text = _clean_comment(com)
-        for m in GOFILE_ID_RE.finditer(text):
+        # d/ forms first, then whitespace-bounded bare slugs; dedup spans both.
+        for m in GOFILE_DFORM_RE.finditer(text):
             content_id = m.group(1)
             if content_id not in seen:
                 seen.add(content_id)
                 found.append((content_id, post["no"]))
+        for m in GOFILE_BARE_RE.finditer(text):
+            content_id = m.group(1)
+            if content_id not in seen:
+                seen.add(content_id)
+                found.append((content_id, post["no"]))
+                print(
+                    f"  note: accepted bare slug /{content_id} "
+                    f"(post {post['no']}) — no d/ prefix"
+                )
     return found
 
 
