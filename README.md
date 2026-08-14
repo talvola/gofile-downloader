@@ -91,5 +91,8 @@ skip logic.
   account; this tool just reports them as failed.
 - **`error-wrongToken` on fresh tokens — or `error-notPremium` on content
   that opens fine in a browser** — usually means gofile rotated the salt in
-  their website-token scheme. See CLAUDE.md ("Website token") for how to
-  re-extract it from `wt.obf.js`.
+  their website-token scheme. The tool now recovers on its own: it re-extracts
+  the salt from gofile's live script, caches it, and retries the call. Run
+  `python gofile_dl.py --refresh-wt` to do that by hand, or set
+  `GOFILE_WT_SALT` to override the salt entirely. See CLAUDE.md
+  ("Website token", "Salt self-healing").

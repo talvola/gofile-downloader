@@ -14,9 +14,10 @@ from pathlib import Path
 
 import requests
 
+import wt_salt
+
 API_BASE = "https://api.gofile.io"
 WEBSITE_ORIGIN = "https://gofile.io"
-TOKEN_SALT = "9844d94d963d30"
 
 TOKEN_CACHE_PATH = Path.home() / ".gofile_dl_token.json"
 TOKEN_MAX_AGE = 24 * 3600  # seconds
@@ -180,8 +181,29 @@ def _make_session(account_token: str) -> requests.Session:
 
 def _website_token(account_token: str) -> str:
     time_slot = int(time.time() / 14400)
-    raw = f"{DEFAULT_UA}::en-US::{account_token}::{time_slot}::{TOKEN_SALT}"
+    raw = f"{DEFAULT_UA}::en-US::{account_token}::{time_slot}::{wt_salt.current_salt()}"
     return hashlib.sha256(raw.encode()).hexdigest()
+
+
+_salt_refreshed = False
+
+
+def refresh_website_token_salt(force: bool = False) -> str | None:
+    """
+    Re-extract gofile's website-token salt, at most once per process.
+
+    Returns the new salt only when it differs from the one we were signing
+    with — i.e. only when retrying the failed call is worth it. Returns None
+    when the salt is unchanged or couldn't be extracted; the caller carries
+    on with the existing salt either way.
+    """
+    global _salt_refreshed
+    if _salt_refreshed and not force:
+        return None
+    _salt_refreshed = True
+    previous = wt_salt.current_salt()
+    fresh = wt_salt.refresh(DEFAULT_UA)
+    return fresh if fresh and fresh != previous else None
 
 
 def _gofile_status(response) -> str | None:

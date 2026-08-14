@@ -17,4 +17,8 @@ Replace <CONTENT_ID> with any gofile.io content ID you know exists (e.g. one fro
 - Connection error or timeout on the API call
 - Falls through to browser scraper unexpectedly
 
-If auth breaks, check TOKEN_SALT and the _website_token() formula in api_client.py — gofile.io may have updated their frontend.
+If auth breaks (error-notPremium / error-wrongToken), the run re-extracts the website-token salt
+itself and retries — watch for a "Salt rotated:" line. If that line appears, update DEFAULT_SALT in
+wt_salt.py to the new value. If extraction itself fails, gofile changed the scheme, not just the
+salt: check the _website_token() formula in api_client.py. `python gofile_dl.py --refresh-wt` runs
+the extraction on its own.

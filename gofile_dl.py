@@ -24,12 +24,15 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
 if sys.stderr.encoding and sys.stderr.encoding.lower() != "utf-8":
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
+import wt_salt
 from api_client import (
+    DEFAULT_UA,
     GofileUnavailable,
     acquire_token,
     get_content,
     parse_file_tree,
     refresh_token,
+    refresh_website_token_salt,
     save_token,
 )
 from browser_scraper import scrape_content
@@ -96,6 +99,19 @@ def run(
                 account_token = fresh
                 data, error = get_content(content_id, account_token, password)
 
+        if error is not None and error.kind in ("premium", "wrong_token"):
+            # Both are what a stale website-token salt looks like from here
+            # (gofile reports it as notPremium since ~2026-06, wrongToken on
+            # older builds), and the account itself is fine. Re-extract the
+            # salt from gofile's live script and retry once — at most one
+            # extraction per process, so a batch doesn't relaunch a browser
+            # per ID.
+            print(f"  API error: {error} — checking the website-token salt...")
+            new_salt = refresh_website_token_salt()
+            if new_salt:
+                print("  Retrying with the refreshed salt...")
+                data, error = get_content(content_id, account_token, password)
+
         if data:
             api_succeeded = True
             folder_name = data.get("name", content_id)
@@ -118,11 +134,12 @@ def run(
                 )
                 return False
             if error.kind == "wrong_token":
-                # Still rejected after a refresh: systemic auth breakage, most
-                # likely a rotated website-token salt. Hammering on won't help.
+                # Still rejected after both a fresh token and a fresh salt:
+                # systemic auth breakage. Hammering on won't help.
                 raise GofileUnavailable(
-                    "token rejected even after refresh — gofile may have rotated "
-                    "the website-token salt (re-extract from wt.obf.js, see CLAUDE.md)",
+                    "token rejected even after refreshing the token and the "
+                    "website-token salt — gofile's signing scheme has likely "
+                    "changed (see CLAUDE.md 'Website token')",
                     "wrong_token",
                 )
             if error.kind in ("rate_limited", "unavailable", "network"):
@@ -132,9 +149,10 @@ def run(
             if error.kind == "premium":
                 print(
                     "  Premium required — falling back to browser scraping...\n"
-                    "  (If this content opens fine in a normal browser, the "
-                    "website-token salt has likely rotated — see CLAUDE.md "
-                    "'Website token' to re-extract it from wt.obf.js.)"
+                    "  (The website-token salt was already checked against "
+                    "gofile's live script above; if that found nothing, this "
+                    "content really is premium-only or the signing scheme "
+                    "changed — see CLAUDE.md 'Website token'.)"
                 )
             else:
                 print("  Falling back to browser scraping...")
@@ -210,6 +228,7 @@ def main():
     )
     parser.add_argument(
         "content",
+        nargs="?",
         help="Gofile content ID or URL (e.g. PjUhkl or https://gofile.io/d/PjUhkl)",
     )
     parser.add_argument(
@@ -245,7 +264,21 @@ def main():
         metavar="TOKEN",
         help="Use this account token instead of creating a guest account",
     )
+    parser.add_argument(
+        "--refresh-wt",
+        action="store_true",
+        help="Re-extract the website-token salt from gofile's live script and exit",
+    )
     args = parser.parse_args()
+
+    if args.refresh_wt:
+        # Straight to wt_salt so an unchanged salt still counts as success —
+        # refresh_website_token_salt() reports only "worth retrying" changes.
+        print(f"Current website-token salt: {wt_salt.current_salt()}")
+        sys.exit(0 if wt_salt.refresh(DEFAULT_UA) else 1)
+
+    if not args.content:
+        parser.error("the following arguments are required: content")
 
     content_id = parse_content_id(args.content)
     # Seed the token cache with the user's token — but only when this run will
