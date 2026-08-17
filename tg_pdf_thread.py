@@ -78,9 +78,49 @@ GOFILE_BARE_RE = re.compile(r"(?:^|(?<=\s))/(" + ID_CHARS + r")(?=\s|$)", re.MUL
 PREV_THREAD_RE = re.compile(r'href="/tg/thread/(\d+)')
 
 
+# Cap on how much of an error body to quote back — enough for a one-line
+# outage notice, short enough that a Cloudflare block page can't flood the log.
+MAX_ERROR_BODY = 200
+
+
+def _error_body(r: requests.Response) -> str:
+    """
+    A short, single-line, ASCII-safe summary of an error response body.
+
+    4chan serves a site-wide outage as plain text ("Performing maintenance.
+    We'll be back soon.") under HTTP 429 — the same status it uses for genuine
+    per-IP throttling — so the body is the ONLY thing that tells "the site is
+    down, wait it out" apart from "you're polling too fast, back off". Returns
+    "" when there's nothing readable to quote.
+    """
+    try:
+        text = r.text or ""
+    except Exception:
+        return ""
+    if "html" in r.headers.get("Content-Type", "").lower():
+        text = re.sub(r"<(script|style)\b.*?</\1>", " ", text, flags=re.S | re.I)
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = html.unescape(text)
+    text = " ".join(text.split())
+    if len(text) > MAX_ERROR_BODY:
+        text = text[:MAX_ERROR_BODY].rstrip() + "..."
+    # The Windows console is cp1252 — a stray non-ASCII byte in an error page
+    # would turn this diagnostic into a UnicodeEncodeError at the print site.
+    return text.encode("ascii", "replace").decode("ascii")
+
+
 def _get_json(url: str):
     r = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=30)
-    r.raise_for_status()
+    try:
+        r.raise_for_status()
+    except requests.HTTPError as e:
+        detail = _error_body(r)
+        if not detail:
+            raise
+        # Re-raise with the body folded into the message so every caller that
+        # already prints the exception gets it. response=r keeps the 404 check
+        # in fetch_thread() working.
+        raise requests.HTTPError(f"{e} — server said: {detail}", response=r) from None
     return r.json()
 
 
