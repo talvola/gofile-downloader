@@ -48,23 +48,30 @@ USER_AGENT = (
     "Chrome/131.0.0.0 Safari/537.36"
 )
 
-# gofile content IDs are 6 alphanumeric chars. Two accepted forms:
+# gofile content IDs are alphanumeric: historically 6 chars, and since ~2026
+# newly-issued ones are 8 (e.g. gofile.io/d/ILUoTvWO). Old 6-char links still
+# work, so both lengths are accepted — but ONLY those two, never a range:
+# "6-or-more" would swallow other services' long IDs and re-open the
+# false-positive problem the anchors below exist to prevent.
+ID_CHARS = r"(?:[A-Za-z0-9]{8}|[A-Za-z0-9]{6})"
+
+# Two accepted forms:
 #
 # 1. d/ form — the canonical gofile.io/d/AS3dnB, the bare /d/AS3dnB, the
 #    obfuscated "g0f1le /d/3tDCbP", AND the leading-slash-dropped "d/GDeWzi"
 #    (seen in the wild). We anchor on "d/" preceded by whitespace, a slash, or
 #    string start so a word ending in "d" (e.g. "read/foobar") can't match.
 #    The (?![A-Za-z0-9]) guard rejects longer IDs from other services
-#    (e.g. Google Drive's /d/<33 chars>).
-GOFILE_DFORM_RE = re.compile(r"(?:^|(?<=[\s/]))d/\s*([A-Za-z0-9]{6})(?![A-Za-z0-9])")
+#    (e.g. Google Drive's /d/<33 chars>) and odd lengths (7, 9+) alike.
+GOFILE_DFORM_RE = re.compile(r"(?:^|(?<=[\s/]))d/\s*(" + ID_CHARS + r")(?![A-Za-z0-9])")
 
-# 2. Bare "/XXXXXX" with no d/ — trusted ONLY when the slash is whitespace- or
-#    line-bounded on the left and the 6 chars are whitespace-/line-bounded on
-#    the right. Without those anchors every mid-URL path segment (e.g.
-#    drivethrurpg.com/product/564646/…) would masquerade as a gofile ID; with
-#    them, a lone "/slug" posted on its own (e.g. "This one?\n/3BKw5y") still
-#    matches while the false positives vanish.
-GOFILE_BARE_RE = re.compile(r"(?:^|(?<=\s))/([A-Za-z0-9]{6})(?=\s|$)", re.MULTILINE)
+# 2. Bare "/XXXXXX" or "/XXXXXXXX" with no d/ — trusted ONLY when the slash is
+#    whitespace- or line-bounded on the left and the slug is whitespace-/line-
+#    bounded on the right. Without those anchors every mid-URL path segment
+#    (e.g. drivethrurpg.com/product/564646/…) would masquerade as a gofile ID;
+#    with them, a lone "/slug" posted on its own (e.g. "This one?\n/3BKw5y")
+#    still matches while the false positives vanish.
+GOFILE_BARE_RE = re.compile(r"(?:^|(?<=\s))/(" + ID_CHARS + r")(?=\s|$)", re.MULTILINE)
 
 # Cross-thread quotelinks in post HTML look like:
 #   <a href="/tg/thread/98130506#p98130506" class="quotelink">&gt;&gt;98130506</a>
