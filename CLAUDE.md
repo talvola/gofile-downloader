@@ -43,7 +43,7 @@ tg_pdf_thread.py        ← batch driver: scrapes 4chan /tg/ for gofile IDs, cal
 
 **Execution flow:**
 1. `gofile_dl.py` parses the content ID, gets a token via `api_client.acquire_token()` (disk cache → Firefox localStorage → new guest account), calls the API
-2. If the API succeeds, `parse_file_tree` recursively flattens the folder tree into `files[]` and `folders[]` lists
+2. If the API succeeds, `parse_file_tree` recursively flattens the folder tree into `files[]` and `folders[]` lists (or, for a single-file share, yields that one file)
 3. If the API fails (not if it succeeds with 0 files — that means private subfolders), the Playwright scraper is tried instead
 4. `downloader.py` writes files to `{output}/{folder_name}/`, skipping by exact size match, setting timestamps from `create_time`
 
@@ -58,6 +58,8 @@ tg_pdf_thread.py        ← batch driver: scrapes 4chan /tg/ for gofile IDs, cal
 **GofileUnavailable aborts batches:** `run()` raises `api_client.GofileUnavailable` (kind: network/rate_limited/unavailable/wrong_token-after-refresh) for conditions where processing more IDs is futile or harmful; `tg_pdf_thread.py` catches it and aborts the whole batch. Per-content failures (`not_found`, `not_authorized`, empty) just `return False` and the batch continues.
 
 **Subfolder-fetch throttle (`_fetch_subfolder` in api_client.py):** Walking a tree fires one API call per subfolder; a folder with 20+ subfolders trips gofile's rate limit if the calls go back-to-back. Each fetch is preceded by a short pause (`SUBFOLDER_FETCH_DELAY`) and retried with backoff (`SUBFOLDER_RETRY_DELAYS`) on `error-rateLimit`. Dropping a rate-limited subfolder is NOT acceptable — it silently omits every file under it while `run()` still reports success (and those files then show up as false orphans). If retries are exhausted the IP is being throttled/temp-banned, so `_fetch_subfolder` raises `GofileUnavailable(rate_limited)`, which propagates through `_walk`→`parse_file_tree`→`run()` to abort the batch rather than persist a partial tree.
+
+**Single-file shares:** A `gofile.io/d/<id>` link can point at one FILE rather than a folder — the API response's root node is `{"type": "file", ...}` with `link`/`size`/`createTime` and no `children` key at all. `parse_file_tree` treats that root as its own sole child; without it the share flattens to 0 files and `run()` misreports it as the private-subfolder case. `data["name"]` is then the file's name, so `run()` derives the output dir from the name with its extension stripped (`{output}/Foo/Foo.zip`) — using it verbatim would nest the file in a directory called `Foo.zip`. Don't "simplify" this to writing the file straight into `{output}`: `find_orphans` walks the output dir, so it would then scan the whole library and report every unrelated file as an orphan.
 
 **Exit codes:** `gofile_dl.py` exits 1 when content can't be fetched or any file fails a real download attempt; `--dry-run` reports link-less files without failing the exit code.
 

@@ -397,14 +397,22 @@ def parse_file_tree(
 
     When a subfolder has a code but no children, fetches its contents via the API.
 
+    A gofile.io/d/<id> link can point at a single FILE rather than a folder, in
+    which case the root node has type "file" and no children at all. Treating
+    the root as the sole child covers that; without it the whole share flattens
+    to zero files and looks like a private-subfolder case to the caller.
+
     Returns (files, folders).
     """
     files = []
     folders = []
+    if data.get("type") == "file":
+        children = [data]
+    else:
+        children = data.get("children", {})
+        if isinstance(children, dict):
+            children = children.values()
     # Start with empty prefix — skip root folder name
-    children = data.get("children", {})
-    if isinstance(children, dict):
-        children = children.values()
     for child in children:
         _walk(child, "", files, folders, account_token, password)
     _disambiguate_paths(files)

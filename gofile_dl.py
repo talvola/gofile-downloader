@@ -114,9 +114,17 @@ def run(
 
         if data:
             api_succeeded = True
-            folder_name = data.get("name", content_id)
             files, folders = parse_file_tree(data, account_token, password)
-            print(f"  Folder: {folder_name}")
+            if data.get("type") == "file":
+                # Single-file share: data["name"] is the FILE's name, not a
+                # folder's, so using it verbatim would nest the file inside a
+                # directory named "thing.zip". Strip the extension instead.
+                file_name = data.get("name") or content_id
+                folder_name = os.path.splitext(file_name)[0] or content_id
+                print(f"  Single file: {file_name}")
+            else:
+                folder_name = data.get("name", content_id)
+                print(f"  Folder: {folder_name}")
             print(f"  Files found: {len(files)}")
             if folders:
                 print(f"  Subfolders found: {len(folders)}")
