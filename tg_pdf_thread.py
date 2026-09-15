@@ -19,6 +19,7 @@ Usage:
 
 import argparse
 import html
+import itertools
 import re
 import sys
 import time
@@ -72,6 +73,14 @@ GOFILE_DFORM_RE = re.compile(r"(?:^|(?<=[\s/]))d/\s*(" + ID_CHARS + r")(?![A-Za-
 #    with them, a lone "/slug" posted on its own (e.g. "This one?\n/3BKw5y")
 #    still matches while the false positives vanish.
 GOFILE_BARE_RE = re.compile(r"(?:^|(?<=\s))/(" + ID_CHARS + r")(?=\s|$)", re.MULTILINE)
+
+# 3. Hyphenated "gf-d-5rqxxFh7" — "gf" abbreviates gofile and hyphens stand in
+#    for the slashes (seen in post 98671658). The "gf-d-" prefix is specific
+#    enough to trust without a note, but it's still bounded on both sides so
+#    it can't fire mid-word (e.g. "xgf-d-…") or on an off-length slug.
+GOFILE_HYPHEN_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?i:gf)-(?i:d)-(" + ID_CHARS + r")(?![A-Za-z0-9])"
+)
 
 # Cross-thread quotelinks in post HTML look like:
 #   <a href="/tg/thread/98130506#p98130506" class="quotelink">&gt;&gt;98130506</a>
@@ -202,8 +211,11 @@ def extract_gofile_ids(posts: list[dict]) -> list[tuple[str, int]]:
         if not com:
             continue
         text = _clean_comment(com)
-        # d/ forms first, then whitespace-bounded bare slugs; dedup spans both.
-        for m in GOFILE_DFORM_RE.finditer(text):
+        # d/ and gf-d- forms first, then whitespace-bounded bare slugs; dedup
+        # spans all of them.
+        for m in itertools.chain(
+            GOFILE_DFORM_RE.finditer(text), GOFILE_HYPHEN_RE.finditer(text)
+        ):
             content_id = m.group(1)
             if content_id not in seen:
                 seen.add(content_id)
